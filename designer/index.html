@@ -158,10 +158,10 @@ const GEN_META = {
 // Generator-specific defaults. segments lives on the layer; repeats is per-generator.
 const GEN_DEF = {
   straight: {},
-  sine:     { amplitude: 6, cycleH: 60 },
-  bezier:   { amplitude: 8, sharpness: 0.0, cycleH: 60 },
+  sine:     { amplitude: 6, cycleH: 60, visibleCycles: 0 },
+  bezier:   { amplitude: 8, sharpness: 0.0, cycleH: 60, visibleCycles: 0 },
   arch:     { depth: 60, sharpness: 0.0 },
-  square:   { amplitude: 6, cornerRadius: 0, cycleH: 60 },
+  square:   { amplitude: 6, cornerRadius: 0, cycleH: 60, visibleCycles: 0 },
 };
 
 // ── Generators ───────────────────────────────────────────────────
@@ -178,11 +178,12 @@ function genStraight(_p, _segWidth, H) {
 // Sine wave: fixed cycle height (cycleH cm), only complete cycles rendered.
 // Starts at y=0 (x=0, zero crossing); x clamped to ±segWidth/2.
 function genSine(p, segWidth, H) {
-  const amp     = p.amplitude * PX;
-  const halfSeg = segWidth / 2;
-  const cycleH  = p.cycleH * PX;
-  const nCycles = Math.floor(H / cycleH);
-  if (nCycles < 1) return new paper.Path();
+  const amp       = p.amplitude * PX;
+  const halfSeg   = segWidth / 2;
+  const cycleH    = p.cycleH * PX;
+  const maxCycles = Math.floor(H / cycleH);
+  if (maxCycles < 1) return new paper.Path();
+  const nCycles = (p.visibleCycles > 0) ? Math.min(maxCycles, p.visibleCycles) : maxCycles;
   const totalH  = nCycles * cycleH;
   const N       = Math.max(60, nCycles * 40);
   const pts     = [];
@@ -199,10 +200,11 @@ function genSine(p, segWidth, H) {
 // Alternating cubic-bezier arches, each departing and returning to x=0.
 // CP x = (4/3)*amp so the bezier peak reaches exactly amp.
 function genBezier(p, segWidth, H) {
-  const amp     = Math.min(p.amplitude * PX, segWidth / 2);
-  const cycleH  = p.cycleH * PX;
-  const nCycles = Math.floor(H / cycleH);
-  if (nCycles < 1) return new paper.Path();
+  const amp       = Math.min(p.amplitude * PX, segWidth / 2);
+  const cycleH    = p.cycleH * PX;
+  const maxCycles = Math.floor(H / cycleH);
+  if (maxCycles < 1) return new paper.Path();
+  const nCycles = (p.visibleCycles > 0) ? Math.min(maxCycles, p.visibleCycles) : maxCycles;
   const cpX  = (4 / 3) * amp;
   const path = new paper.Path();
   path.moveTo(new paper.Point(0, 0));
@@ -253,10 +255,11 @@ function genArch(p, segWidth, H, sw) {
 // Square wave: fixed cycle height (cycleH cm), only complete cycles rendered.
 // Alternates between x=+amp and x=-amp; cornerRadius rounds each 90° joint.
 function genSquare(p, segWidth, H) {
-  const amp     = Math.min(p.amplitude * PX, segWidth / 2);
-  const cycleH  = p.cycleH * PX;
-  const nCycles = Math.floor(H / cycleH);
-  if (nCycles < 1) return new paper.Path();
+  const amp       = Math.min(p.amplitude * PX, segWidth / 2);
+  const cycleH    = p.cycleH * PX;
+  const maxCycles = Math.floor(H / cycleH);
+  if (maxCycles < 1) return new paper.Path();
+  const nCycles = (p.visibleCycles > 0) ? Math.min(maxCycles, p.visibleCycles) : maxCycles;
   const halfH = cycleH / 2;                                 // height of one half-period
   const r     = Math.min((p.cornerRadius || 0) * PX,        // clamped corner radius
                          halfH * 0.45, amp * 0.9);
@@ -491,21 +494,22 @@ function chkrow(lbl, k, checked) {
 function buildGenCtrls(layer) {
   const p = layer.params;
   if (layer.gen === 'straight') return '';
-  const cycleRow = srow('Cycle height (cm)', 'cycleH', 5, 200, 5, p.cycleH);
+  const cycleRow   = srow('Cycle height (cm)',      'cycleH',        5,  200, 5,    p.cycleH);
+  const visRow     = srow('Visible cycles (0 = all)', 'visibleCycles', 0, 40, 1,    p.visibleCycles);
   if (layer.gen === 'sine')
     return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
-         + cycleRow;
+         + cycleRow + visRow;
   if (layer.gen === 'bezier')
     return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
          + srow('Sharpness',      'sharpness', 0, 1,  0.01, p.sharpness)
-         + cycleRow;
+         + cycleRow + visRow;
   if (layer.gen === 'arch')
     return srow('Depth (cm)',  'depth',     1, 200, 1,    p.depth)
          + srow('Sharpness',   'sharpness', 0, 0.95, 0.05, p.sharpness);
   if (layer.gen === 'square')
     return srow('Amplitude (cm)',      'amplitude',    0, 30, 0.5,  p.amplitude)
          + srow('Corner radius (cm)',  'cornerRadius', 0, 15, 0.25, p.cornerRadius)
-         + cycleRow;
+         + cycleRow + visRow;
   return '';
 }
 
