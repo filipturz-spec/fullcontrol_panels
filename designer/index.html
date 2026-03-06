@@ -105,7 +105,7 @@ canvas{display:block;background:#f4f0e8}
         <div id="gen-picker" class="hidden">
           <div data-gen="straight"><span class="gi">│</span>Straight</div>
           <div data-gen="sine"><span class="gi">∿</span>Sine Wave</div>
-          <div data-gen="oscillation"><span class="gi">〜</span>Oscillation</div>
+          <div data-gen="bezier"><span class="gi">〜</span>Bézier</div>
           <div data-gen="arch"><span class="gi">⌒</span>Arch</div>
           <div data-gen="square"><span class="gi">⊓</span>Square Wave</div>
         </div>
@@ -150,18 +150,18 @@ const SEG_OPTS = [2, 4, 8, 16, 32];
 const GEN_META = {
   straight:    { label: 'Straight',    icon: '│' },
   sine:        { label: 'Sine Wave',   icon: '∿' },
-  oscillation: { label: 'Oscillation', icon: '〜' },
+  bezier:      { label: 'Bézier',      icon: '〜' },
   arch:        { label: 'Arch',        icon: '⌒' },
   square:      { label: 'Square Wave', icon: '⊓' },
 };
 
 // Generator-specific defaults. segments lives on the layer; repeats is per-generator.
 const GEN_DEF = {
-  straight:    {},
-  sine:        { amplitude: 6, repeats: 3 },
-  oscillation: { amplitude: 8, sharpness: 0.0, repeats: 3 },
-  arch:        { depth: 60, sharpness: 0.0 },
-  square:      { amplitude: 6, cornerRadius: 0, repeats: 3 },
+  straight: {},
+  sine:     { amplitude: 6, cycleH: 60 },
+  bezier:   { amplitude: 8, sharpness: 0.0, cycleH: 60 },
+  arch:     { depth: 60, sharpness: 0.0 },
+  square:   { amplitude: 6, cornerRadius: 0, cycleH: 60 },
 };
 
 // ── Generators ───────────────────────────────────────────────────
@@ -175,39 +175,42 @@ function genStraight(_p, _segWidth, H) {
   return new paper.Path([new paper.Point(0, 0), new paper.Point(0, H)]);
 }
 
-// Full sine wave centered at x=0: `repeats` complete cycles top→bottom.
-// x = amp * sin(2π * repeats * t), clamped to ±segWidth/2.
-// When amp > halfSeg the wave travels along the boundary (flat-top).
+// Sine wave: fixed cycle height (cycleH cm), only complete cycles rendered.
+// Starts at y=0 (x=0, zero crossing); x clamped to ±segWidth/2.
 function genSine(p, segWidth, H) {
   const amp     = p.amplitude * PX;
   const halfSeg = segWidth / 2;
-  const N       = Math.max(60, p.repeats * 40);
+  const cycleH  = p.cycleH * PX;
+  const nCycles = Math.floor(H / cycleH);
+  if (nCycles < 1) return new paper.Path();
+  const totalH  = nCycles * cycleH;
+  const N       = Math.max(60, nCycles * 40);
   const pts     = [];
   for (let s = 0; s <= N; s++) {
     const t = s / N;
     const x = Math.max(-halfSeg, Math.min(halfSeg,
-                amp * Math.sin(2 * Math.PI * p.repeats * t)));
-    pts.push(new paper.Point(x, t * H));
+                amp * Math.sin(2 * Math.PI * nCycles * t)));
+    pts.push(new paper.Point(x, t * totalH));
   }
   return new paper.Path(pts);
 }
 
-// Oscillation: `repeats` cubic-bezier arches, alternating left-right, top→bottom.
-// Each arch departs and returns to the centre line (x=0).
-// sharpness 0 = smooth round arch (CPs at ends),
-//            1 = pointed/gothic arch (CPs pulled toward midpoint).
-// CP x-coords = (4/3)*amp so the bezier peak actually reaches amp.
-function genOscillation(p, segWidth, H) {
-  const amp   = Math.min(p.amplitude * PX, segWidth / 2);
-  const cellH = H / p.repeats;
-  const cpX   = (4 / 3) * amp;                     // ensures peak == amp
-  const path  = new paper.Path();
+// Bézier: fixed cycle height (cycleH cm), only complete cycles rendered.
+// Alternating cubic-bezier arches, each departing and returning to x=0.
+// CP x = (4/3)*amp so the bezier peak reaches exactly amp.
+function genBezier(p, segWidth, H) {
+  const amp     = Math.min(p.amplitude * PX, segWidth / 2);
+  const cycleH  = p.cycleH * PX;
+  const nCycles = Math.floor(H / cycleH);
+  if (nCycles < 1) return new paper.Path();
+  const cpX  = (4 / 3) * amp;
+  const path = new paper.Path();
   path.moveTo(new paper.Point(0, 0));
-  for (let c = 0; c < p.repeats; c++) {
+  for (let c = 0; c < nCycles; c++) {
     const dir = c % 2 === 0 ? 1 : -1;
-    const y0  = c * cellH;
-    const y1  = y0 + cellH;
-    const hv  = (cellH / 2) * p.sharpness;         // 0 = round, 1 = pointed
+    const y0  = c * cycleH;
+    const y1  = y0 + cycleH;
+    const hv  = (cycleH / 2) * p.sharpness;
     path.cubicCurveTo(
       new paper.Point(cpX * dir, y0 + hv),
       new paper.Point(cpX * dir, y1 - hv),
@@ -247,11 +250,14 @@ function genArch(p, segWidth, H, sw) {
   return path;
 }
 
-// True square wave: alternates between x=+amp and x=-amp every half-period.
-// cornerRadius (cm) rounds each 90-degree joint with a bezier arc.
+// Square wave: fixed cycle height (cycleH cm), only complete cycles rendered.
+// Alternates between x=+amp and x=-amp; cornerRadius rounds each 90° joint.
 function genSquare(p, segWidth, H) {
-  const amp   = Math.min(p.amplitude * PX, segWidth / 2);
-  const halfH = H / (p.repeats * 2);                        // height of one half-period
+  const amp     = Math.min(p.amplitude * PX, segWidth / 2);
+  const cycleH  = p.cycleH * PX;
+  const nCycles = Math.floor(H / cycleH);
+  if (nCycles < 1) return new paper.Path();
+  const halfH = cycleH / 2;                                 // height of one half-period
   const r     = Math.min((p.cornerRadius || 0) * PX,        // clamped corner radius
                          halfH * 0.45, amp * 0.9);
   const K     = 0.5523;                                      // bezier quarter-circle approx
@@ -259,11 +265,11 @@ function genSquare(p, segWidth, H) {
   const path = new paper.Path();
   path.moveTo(new paper.Point(amp, 0));
 
-  for (let c = 0; c < p.repeats; c++) {
+  for (let c = 0; c < nCycles; c++) {
     const y0 = c * halfH * 2;
     const yM = y0 + halfH;
     const y1 = y0 + halfH * 2;
-    const last = c === p.repeats - 1;
+    const last = c === nCycles - 1;
 
     if (r <= 0) {
       // Sharp corners
@@ -309,7 +315,7 @@ function genSquare(p, segWidth, H) {
   return path;
 }
 
-const GEN_FNS = { straight: genStraight, sine: genSine, oscillation: genOscillation, arch: genArch, square: genSquare };
+const GEN_FNS = { straight: genStraight, sine: genSine, bezier: genBezier, arch: genArch, square: genSquare };
 
 // ── Segment placement ─────────────────────────────────────────────
 // basePath is centered at x=0. Stamp it once per segment, centered in
@@ -324,7 +330,9 @@ function drawSegments(layer, basePath) {
     const cx   = (i + 0.5) * segW;   // centre x of this strip
     const path = basePath.clone();    // always clone — basePath stays at x=0
     path.translate(new paper.Point(cx, 0));
-    if (layer.mirror && i % 2 === 1) path.scale(-1, 1, new paper.Point(cx, H / 2));
+    const flip = layer.direction === 'RRRR' ||
+                 (layer.direction === 'LRLR' && i % 2 === 1);
+    if (flip) path.scale(-1, 1, new paper.Point(cx, H / 2));
     path.strokeColor = new paper.Color(layer.style.color);
     path.strokeWidth = layer.style.strokeWidth * PX;
     path.fillColor   = null;
@@ -427,8 +435,8 @@ function addLayer(gen) {
     gen,
     name:     `${GEN_META[gen].label} ${layers.length + 1}`,
     visible:  true,
-    segments: 4,   // number of vertical strips across the panel
-    mirror:   true,
+    segments:  4,      // number of vertical strips across the panel
+    direction: 'LLLL', // 'LLLL' | 'LRLR' | 'RRRR'
     params:   Object.assign({}, GEN_DEF[gen]),
     style:    { color: '#5c3d1e', strokeWidth: 0.3 },
   };
@@ -454,7 +462,7 @@ function toggleVis(id) {
 }
 
 function setParam(layer, k, v) {
-  if (k === 'segments' || k === 'mirror') layer[k] = v;
+  if (k === 'segments' || k === 'direction') layer[k] = v;
   else if (k.startsWith('s_')) layer.style[k.slice(2)] = v;
   else layer.params[k] = v;
 }
@@ -468,7 +476,7 @@ function srow(lbl, k, min, max, step, val) {
   </div>`;
 }
 function selrow(lbl, k, opts, val) {
-  const os = opts.map(v => `<option value="${v}"${+v === +val ? ' selected' : ''}>${v}</option>`).join('');
+  const os = opts.map(v => `<option value="${v}"${String(v) === String(val) ? ' selected' : ''}>${v}</option>`).join('');
   return `<div class="crow"><span class="clbl">${lbl}</span><select class="csel" data-k="${k}">${os}</select></div>`;
 }
 function crow(lbl, k, val) {
@@ -481,21 +489,21 @@ function chkrow(lbl, k, checked) {
 function buildGenCtrls(layer) {
   const p = layer.params;
   if (layer.gen === 'straight') return '';
-  const repeats = srow('Repeats', 'repeats', 1, 20, 1, p.repeats);
+  const cycleRow = srow('Cycle height (cm)', 'cycleH', 5, 200, 5, p.cycleH);
   if (layer.gen === 'sine')
     return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
-         + repeats;
-  if (layer.gen === 'oscillation')
+         + cycleRow;
+  if (layer.gen === 'bezier')
     return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
          + srow('Sharpness',      'sharpness', 0, 1,  0.01, p.sharpness)
-         + repeats;
+         + cycleRow;
   if (layer.gen === 'arch')
     return srow('Depth (cm)',  'depth',     1, 200, 1,    p.depth)
          + srow('Sharpness',   'sharpness', 0, 0.95, 0.05, p.sharpness);
   if (layer.gen === 'square')
     return srow('Amplitude (cm)',      'amplitude',    0, 30, 0.5,  p.amplitude)
          + srow('Corner radius (cm)',  'cornerRadius', 0, 15, 0.25, p.cornerRadius)
-         + repeats;
+         + cycleRow;
   return '';
 }
 
@@ -514,8 +522,8 @@ function buildCard(layer) {
     <div class="lbody">
       <div class="csec">
         <div class="ctitle">Grid</div>
-        ${selrow('Segments', 'segments', SEG_OPTS, layer.segments)}
-        ${chkrow('Mirror (L R L R)', 'mirror', layer.mirror)}
+        ${selrow('Segments',  'segments',  SEG_OPTS,                  layer.segments)}
+        ${selrow('Direction', 'direction', ['LLLL','LRLR','RRRR'],    layer.direction)}
       </div>
       ${gc ? `<div class="csec"><div class="ctitle">Generator</div>${gc}</div>` : ''}
       <div class="csec">
