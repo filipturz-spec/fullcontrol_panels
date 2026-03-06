@@ -153,105 +153,99 @@ const GEN_META = {
   square:   { label: 'Square Wave', icon: '⊓' },
 };
 
-// Generator-specific defaults. segments & columns live on the layer.
+// Generator-specific defaults. segments lives on the layer; repeats is per-generator.
 const GEN_DEF = {
   straight: {},
-  sine:     { amplitude: 6 },
-  arch:     { amplitude: 8, sharpness: 0.6 },
-  square:   { amplitude: 6, roundness: 0.15 },
+  sine:     { amplitude: 6, repeats: 3 },
+  arch:     { amplitude: 8, sharpness: 0.6, repeats: 3 },
+  square:   { amplitude: 6, roundness: 0.15, repeats: 3 },
 };
 
 // ── Generators ───────────────────────────────────────────────────
-// Each generator produces ONE unit cell: a single segment's path from
-// Point(0,0) to Point(0,cellH), bumping rightward (+x).
-// buildSpine() handles vertical repetition and alternating flip.
-// drawColumns() handles horizontal repetition and mirror.
+// Each generator produces ONE full-height path for a single segment.
+// The path is centered at x=0, spanning y=[0,H].
+// x ranges from -amp to +amp; the segment boundary is ±segWidth/2.
+// Amplitude beyond segWidth/2 will visually overflow (user's choice).
+// drawSegments() handles horizontal repetition and mirror.
 
-function genStraight(_p, cellH) {
-  return new paper.Path([new paper.Point(0, 0), new paper.Point(0, cellH)]);
+function genStraight(_p, _segWidth, H) {
+  return new paper.Path([new paper.Point(0, 0), new paper.Point(0, H)]);
 }
 
-// Half-sine bump: sin(πt) 0→amp→0 over one cell height, going right.
-function genSine(p, cellH) {
+// Full sine wave centered at x=0: `repeats` complete cycles top→bottom.
+// x = amp * sin(2π * repeats * t)
+function genSine(p, _segWidth, H) {
   const amp = p.amplitude * PX;
-  const N   = 60;
+  const N   = Math.max(60, p.repeats * 40);
   const pts = [];
   for (let s = 0; s <= N; s++) {
     const t = s / N;
-    pts.push(new paper.Point(amp * Math.sin(Math.PI * t), t * cellH));
+    pts.push(new paper.Point(amp * Math.sin(2 * Math.PI * p.repeats * t), t * H));
   }
   return new paper.Path(pts);
 }
 
-// Single cubic-bezier arc from (0,0) to (0,cellH) bulging right (+x).
+// `repeats` cubic-bezier arches, alternating left-right, top→bottom.
 // sharpness 0 = round arch, 1 = flat-top / gothic.
-function genArch(p, cellH) {
-  const amp  = p.amplitude * PX;
-  const h    = cellH * (1 - p.sharpness) * 0.42;
-  const path = new paper.Path();
+function genArch(p, _segWidth, H) {
+  const amp   = p.amplitude * PX;
+  const cellH = H / p.repeats;
+  const h     = cellH * (1 - p.sharpness) * 0.42;
+  const path  = new paper.Path();
   path.moveTo(new paper.Point(0, 0));
-  path.cubicCurveTo(
-    new paper.Point(amp, h),
-    new paper.Point(amp, cellH - h),
-    new paper.Point(0,   cellH)
-  );
+  for (let c = 0; c < p.repeats; c++) {
+    const dir = c % 2 === 0 ? 1 : -1;
+    const y0  = c * cellH;
+    const y1  = y0 + cellH;
+    path.cubicCurveTo(
+      new paper.Point(amp * dir, y0 + h),
+      new paper.Point(amp * dir, y1 - h),
+      new paper.Point(0,         y1)
+    );
+  }
   return path;
 }
 
-// Flat-top bump: raised-cosine edges, flat plateau, going right.
-// roundness = fraction of segment height used for the edge transition.
+// `repeats` flat-top bumps, alternating left-right, top→bottom.
+// roundness = fraction of cell height used for the edge transition.
 function squareBump(t, r) {
   if (t < r)     return 0.5 * (1 - Math.cos(Math.PI * t / r));
   if (t > 1 - r) return 0.5 * (1 - Math.cos(Math.PI * (1 - t) / r));
   return 1;
 }
 
-function genSquare(p, cellH) {
-  const amp = p.amplitude * PX;
-  const r   = Math.max(0.01, Math.min(0.49, p.roundness));
-  const N   = 60;
-  const pts = [];
-  for (let s = 0; s <= N; s++) {
-    const t = s / N;
-    pts.push(new paper.Point(amp * squareBump(t, r), t * cellH));
+function genSquare(p, _segWidth, H) {
+  const amp   = p.amplitude * PX;
+  const cellH = H / p.repeats;
+  const r     = Math.max(0.01, Math.min(0.49, p.roundness));
+  const N     = Math.max(60, p.repeats * 40);
+  const pts   = [];
+  for (let c = 0; c < p.repeats; c++) {
+    const dir = c % 2 === 0 ? 1 : -1;
+    for (let s = 0; s <= N / p.repeats; s++) {
+      const t = s / (N / p.repeats);
+      pts.push(new paper.Point(amp * dir * squareBump(t, r), c * cellH + t * cellH));
+    }
   }
   return new paper.Path(pts);
 }
 
 const GEN_FNS = { straight: genStraight, sine: genSine, arch: genArch, square: genSquare };
 
-// Stack `segs` copies of unit vertically, x-flipping every other one.
-// Returns a single continuous path spanning the full panel height.
-function buildSpine(unit, segs, cellH) {
-  const result = new paper.Path();
-  for (let c = 0; c < segs; c++) {
-    const copy = unit.clone();
-    if (c % 2 === 1) copy.scale(-1, 1, new paper.Point(0, 0));
-    copy.translate(new paper.Point(0, c * cellH));
-    // Skip duplicate endpoint: last point of previous cell == first of this one.
-    result.addSegments(c === 0 ? copy.segments : copy.segments.slice(1));
-    copy.remove();
-  }
-  unit.remove();
-  return result;
-}
-
-// ── Column placement ─────────────────────────────────────────────
-// Stamps basePath across the panel width.
-// When layer.mirror is true (LRLR): odd columns are x-mirrored,
-// phase-shifting the alternating pattern by one segment → arches appear
-// in the negative space between adjacent columns.
-// When false (LLLL): all columns are identical, constant spacing.
-function drawColumns(layer, basePath) {
+// ── Segment placement ─────────────────────────────────────────────
+// basePath is centered at x=0. Stamp it once per segment, centered in
+// each strip. Mirror (LRLR): odd segments are x-flipped around their
+// strip centre. Plain (LLLL): all copies are identical.
+function drawSegments(layer, basePath) {
   const { W, H } = getPx();
-  const n       = layer.columns;
-  const spacing = n > 1 ? W / (n - 1) : 0;
+  const n        = layer.segments;
+  const segW     = W / n;
 
   for (let i = 0; i < n; i++) {
+    const cx   = (i + 0.5) * segW;   // centre x of this strip
     const path = i === 0 ? basePath : basePath.clone();
-    const x    = i * spacing;
-    if (i > 0) path.translate(new paper.Point(x, 0));
-    if (layer.mirror && i % 2 === 1) path.scale(-1, 1, new paper.Point(x, H / 2));
+    path.translate(new paper.Point(cx, 0));
+    if (layer.mirror && i % 2 === 1) path.scale(-1, 1, new paper.Point(cx, H / 2));
     path.strokeColor = new paper.Color(layer.style.color);
     path.strokeWidth = layer.style.strokeWidth * PX;
     path.fillColor   = null;
@@ -260,14 +254,14 @@ function drawColumns(layer, basePath) {
   }
 }
 
-// Faint vertical dashed lines at each column's neutral spine position.
-// Segments are vertical strips — their dividing lines run top-to-bottom.
+// Faint dashed vertical lines at internal segment boundaries.
+// n segments → n-1 internal dividers at x = segW, 2·segW, …
 function drawSegmentLines(layer) {
   const { W, H } = getPx();
-  const n       = layer.columns;
-  const spacing = n > 1 ? W / (n - 1) : 0;
-  for (let i = 0; i < n; i++) {
-    const x    = i * spacing;
+  const n    = layer.segments;
+  const segW = W / n;
+  for (let i = 1; i < n; i++) {
+    const x    = i * segW;
     const line = new paper.Path([new paper.Point(x, 0), new paper.Point(x, H)]);
     line.strokeColor = new paper.Color(0, 0, 0, 0.18);
     line.strokeWidth = 0.5;
@@ -284,11 +278,10 @@ function drawIntoLayer(layer, pl) {
   drawSegmentLines(layer);
   const fn = GEN_FNS[layer.gen];
   if (!fn) return;
-  const { H }  = getPx();
-  const cellH  = H / layer.segments;
-  const unit   = fn(layer.params, cellH);
-  const spine  = buildSpine(unit, layer.segments, cellH);
-  drawColumns(layer, spine);
+  const { W, H } = getPx();
+  const segW     = W / layer.segments;
+  const spine    = fn(layer.params, segW, H);
+  drawSegments(layer, spine);
 }
 
 function drawBorder() {
@@ -353,8 +346,7 @@ function addLayer(gen) {
     gen,
     name:     `${GEN_META[gen].label} ${layers.length + 1}`,
     visible:  true,
-    segments: 4,
-    columns:  5,
+    segments: 4,   // number of vertical strips across the panel
     mirror:   true,
     params:   Object.assign({}, GEN_DEF[gen]),
     style:    { color: '#5c3d1e', strokeWidth: 0.3 },
@@ -381,7 +373,7 @@ function toggleVis(id) {
 }
 
 function setParam(layer, k, v) {
-  if (k === 'segments' || k === 'columns' || k === 'mirror') layer[k] = v;
+  if (k === 'segments' || k === 'mirror') layer[k] = v;
   else if (k.startsWith('s_')) layer.style[k.slice(2)] = v;
   else layer.params[k] = v;
 }
@@ -408,14 +400,18 @@ function chkrow(lbl, k, checked) {
 function buildGenCtrls(layer) {
   const p = layer.params;
   if (layer.gen === 'straight') return '';
+  const repeats = srow('Repeats', 'repeats', 1, 20, 1, p.repeats);
   if (layer.gen === 'sine')
-    return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude);
+    return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
+         + repeats;
   if (layer.gen === 'arch')
     return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
-         + srow('Sharpness',      'sharpness', 0, 1, 0.01, p.sharpness);
+         + srow('Sharpness',      'sharpness', 0, 1, 0.01, p.sharpness)
+         + repeats;
   if (layer.gen === 'square')
     return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
-         + srow('Roundness',      'roundness', 0.01, 0.49, 0.01, p.roundness);
+         + srow('Roundness',      'roundness', 0.01, 0.49, 0.01, p.roundness)
+         + repeats;
   return '';
 }
 
@@ -435,8 +431,7 @@ function buildCard(layer) {
       <div class="csec">
         <div class="ctitle">Grid</div>
         ${selrow('Segments', 'segments', SEG_OPTS, layer.segments)}
-        ${srow('Columns', 'columns', 1, 20, 1, layer.columns)}
-        ${chkrow('Mirror columns (L R L R)', 'mirror', layer.mirror)}
+        ${chkrow('Mirror (L R L R)', 'mirror', layer.mirror)}
       </div>
       ${gc ? `<div class="csec"><div class="ctitle">Generator</div>${gc}</div>` : ''}
       <div class="csec">
