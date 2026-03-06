@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Partition Screen Designer</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+
+    <aside id="sidebar">
+      <div id="sidebar-header">
+        <span class="app-title">Screen Designer</span>
+        <div id="add-layer-wrap">
+          <button id="add-layer-btn" title="Add a new pattern layer">+ Layer</button>
+          <div id="generator-picker" class="hidden">
+            <div class="picker-label">Choose generator</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="layers-panel">
+        <div id="layers-list"></div>
+      </div>
+
+      <div id="sidebar-footer">
+        <button id="btn-export-svg">Export SVG</button>
+        <button id="btn-save-json">Save JSON</button>
+        <label id="btn-load-json-wrap">Load JSON
+          <input type="file" id="file-load-json" accept=".json" style="display:none">
+        </label>
+      </div>
+    </aside>
+
+    <main id="canvas-wrap">
+      <div id="canvas-toolbar">
+        <label>Canvas
+          <input type="number" id="canvas-w" value="600" min="200" max="1600" step="10"> ×
+          <input type="number" id="canvas-h" value="900" min="200" max="2400" step="10"> px
+        </label>
+        <label>Zoom
+          <input type="range" id="zoom-slider" min="20" max="200" value="80" step="5">
+          <span id="zoom-label">80%</span>
+        </label>
+        <label style="margin-left:auto">
+          <input type="checkbox" id="show-grid"> Grid
+        </label>
+      </div>
+      <div id="canvas-scroll">
+        <div id="canvas-inner">
+          <canvas id="main-canvas"></canvas>
+        </div>
+      </div>
+    </main>
+
+  </div>
+
+  <!-- Paper.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/paper.js/0.12.17/paper-full.min.js"></script>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
