@@ -64,6 +64,8 @@ body{background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;font-
 .cnum{width:44px;background:var(--sf);border:1px solid var(--bd);color:var(--tx);border-radius:3px;padding:2px 4px;font-size:11px;text-align:right}
 .csel{flex:1;background:var(--sf);border:1px solid var(--bd);color:var(--tx);border-radius:3px;padding:3px 5px;font-size:11px}
 .ccol{flex:1;height:24px;border:none;background:none;cursor:pointer;border-radius:3px}
+.cchk{display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:11px;color:var(--dm);cursor:pointer}
+.cchk input{accent-color:var(--ac)}
 
 /* ── Footer ── */
 #sb-foot{padding:8px 10px;border-top:1px solid var(--bd);display:flex;gap:5px;flex-shrink:0}
@@ -170,19 +172,20 @@ function genStraight(_p, _segs, H) {
   });
 }
 
-// One raised-cosine bump per segment.
-// Raised cosine gives zero x-velocity at each grid-line endpoint,
-// so adjacent segments within a column join without a kink.
+// Half-sine bump per segment, alternating direction (L R L R …).
+// Each segment starts and ends at x=0, joining cleanly.
+// sin(πt): 0→amp→0, smooth bell shape.
 function genSine(p, segs, H) {
   const amp   = p.amplitude * PX;
   const cellH = H / segs;
   const N     = 60;
   const pts   = [];
   for (let c = 0; c < segs; c++) {
+    const dir = c % 2 === 0 ? 1 : -1; // alternates R L R L …
     for (let s = 0; s <= N; s++) {
       const t = s / N;
       pts.push(new paper.Point(
-        amp * Math.sin(Math.PI * t),
+        amp * dir * Math.sin(Math.PI * t),
         c * cellH + t * cellH
       ));
     }
@@ -190,11 +193,11 @@ function genSine(p, segs, H) {
   return new paper.Path(pts);
 }
 
-// One cubic-bezier arc per segment.
+// Single cubic-bezier arc per segment, alternating direction (L R L R …).
 // sharpness 0 = round arch, 1 = flat-top / gothic.
-// The handle offset h controls the tangent at the spine endpoints:
-//   h = 0              → horizontal departure → flat top → pointed arch in the negative space
-//   h = cellH * 0.42   → diagonal departure  → rounder arch shape
+// Handle offset h controls departure angle at the spine:
+//   h = 0            → horizontal → flat top → pointed arch in negative space
+//   h ≈ cellH*0.42   → diagonal  → rounder arch
 function genArch(p, segs, H) {
   const amp   = p.amplitude * PX;
   const cellH = H / segs;
@@ -202,12 +205,13 @@ function genArch(p, segs, H) {
   const path  = new paper.Path();
   path.moveTo(new paper.Point(0, 0));
   for (let c = 0; c < segs; c++) {
-    const y0 = c * cellH;
-    const y1 = y0 + cellH;
+    const dir = c % 2 === 0 ? 1 : -1;
+    const y0  = c * cellH;
+    const y1  = y0 + cellH;
     path.cubicCurveTo(
-      new paper.Point(amp, y0 + h),
-      new paper.Point(amp, y1 - h),
-      new paper.Point(0,   y1)
+      new paper.Point(amp * dir, y0 + h),
+      new paper.Point(amp * dir, y1 - h),
+      new paper.Point(0,         y1)
     );
   }
   return path;
@@ -229,10 +233,11 @@ function genSquare(p, segs, H) {
   const N     = 60;
   const pts   = [];
   for (let c = 0; c < segs; c++) {
+    const dir = c % 2 === 0 ? 1 : -1;
     for (let s = 0; s <= N; s++) {
       const t = s / N;
       pts.push(new paper.Point(
-        amp * squareBump(t, r),
+        amp * dir * squareBump(t, r),
         c * cellH + t * cellH
       ));
     }
@@ -242,10 +247,12 @@ function genSquare(p, segs, H) {
 
 const GEN_FNS = { straight: genStraight, sine: genSine, arch: genArch, square: genSquare };
 
-// ── Column placement — LRLR ──────────────────────────────────────
-// Stamps the L-type basePath across the panel width.
-// Odd columns are mirrored around their spine x-position → R type.
-// Result: L R L R L … pattern, arches appear in the negative space.
+// ── Column placement ─────────────────────────────────────────────
+// Stamps basePath across the panel width.
+// When layer.mirror is true (LRLR): odd columns are x-mirrored,
+// phase-shifting the alternating pattern by one segment → arches appear
+// in the negative space between adjacent columns.
+// When false (LLLL): all columns are identical, constant spacing.
 function drawColumns(layer, basePath) {
   const { W, H } = getPx();
   const n       = layer.columns;
@@ -255,12 +262,25 @@ function drawColumns(layer, basePath) {
     const path = i === 0 ? basePath : basePath.clone();
     const x    = i * spacing;
     if (i > 0) path.translate(new paper.Point(x, 0));
-    if (i % 2 === 1) path.scale(-1, 1, new paper.Point(x, H / 2));
+    if (layer.mirror && i % 2 === 1) path.scale(-1, 1, new paper.Point(x, H / 2));
     path.strokeColor = new paper.Color(layer.style.color);
     path.strokeWidth = layer.style.strokeWidth * PX;
     path.fillColor   = null;
     path.strokeCap   = 'round';
     path.strokeJoin  = 'round';
+  }
+}
+
+// Faint dashed lines at this layer's segment boundaries.
+function drawSegmentLines(layer) {
+  const { W, H } = getPx();
+  const cellH = H / layer.segments;
+  for (let i = 1; i < layer.segments; i++) {
+    const y    = i * cellH;
+    const line = new paper.Path([new paper.Point(0, y), new paper.Point(W, y)]);
+    line.strokeColor = new paper.Color(0, 0, 0, 0.18);
+    line.strokeWidth = 0.5;
+    line.dashArray   = [5, 5];
   }
 }
 
@@ -270,6 +290,7 @@ function getPx() { return { W: App.panelW * PX, H: App.panelH * PX }; }
 function drawIntoLayer(layer, pl) {
   pl.activate();
   if (!layer.visible) return;
+  drawSegmentLines(layer);
   const fn = GEN_FNS[layer.gen];
   if (!fn) return;
   const basePath = fn(layer.params, layer.segments, getPx().H);
@@ -340,6 +361,7 @@ function addLayer(gen) {
     visible:  true,
     segments: 4,
     columns:  5,
+    mirror:   true,
     params:   Object.assign({}, GEN_DEF[gen]),
     style:    { color: '#5c3d1e', strokeWidth: 0.3 },
   };
@@ -365,7 +387,7 @@ function toggleVis(id) {
 }
 
 function setParam(layer, k, v) {
-  if (k === 'segments' || k === 'columns') layer[k] = v;
+  if (k === 'segments' || k === 'columns' || k === 'mirror') layer[k] = v;
   else if (k.startsWith('s_')) layer.style[k.slice(2)] = v;
   else layer.params[k] = v;
 }
@@ -384,6 +406,9 @@ function selrow(lbl, k, opts, val) {
 }
 function crow(lbl, k, val) {
   return `<div class="crow"><span class="clbl">${lbl}</span><input type="color" class="ccol" data-k="${k}" value="${val}"></div>`;
+}
+function chkrow(lbl, k, checked) {
+  return `<label class="cchk"><input type="checkbox" data-k="${k}"${checked ? ' checked' : ''}> ${lbl}</label>`;
 }
 
 function buildGenCtrls(layer) {
@@ -417,6 +442,7 @@ function buildCard(layer) {
         <div class="ctitle">Grid</div>
         ${selrow('Segments', 'segments', SEG_OPTS, layer.segments)}
         ${srow('Columns', 'columns', 1, 20, 1, layer.columns)}
+        ${chkrow('Mirror columns (L R L R)', 'mirror', layer.mirror)}
       </div>
       ${gc ? `<div class="csec"><div class="ctitle">Generator</div>${gc}</div>` : ''}
       <div class="csec">
@@ -451,6 +477,12 @@ function wireCard(card, layer) {
   card.querySelectorAll('.ccol').forEach(el =>
     el.addEventListener('input', e => {
       setParam(layer, el.dataset.k, e.target.value);
+      schedRedraw(layer.id);
+    }));
+
+  card.querySelectorAll('input[type=checkbox]').forEach(el =>
+    el.addEventListener('change', e => {
+      setParam(layer, el.dataset.k, e.target.checked);
       schedRedraw(layer.id);
     }));
 }
