@@ -551,7 +551,8 @@ function wireCard(card, layer) {
 
   card.querySelectorAll('.csel').forEach(sel =>
     sel.addEventListener('change', e => {
-      setParam(layer, sel.dataset.k, +e.target.value);
+      const raw = e.target.value;
+      setParam(layer, sel.dataset.k, isNaN(raw) ? raw : +raw);
       schedRedraw(layer.id);
     }));
 
