@@ -157,7 +157,7 @@ const GEN_META = {
 const GEN_DEF = {
   straight: {},
   sine:     { amplitude: 6, repeats: 3 },
-  arch:     { amplitude: 8, sharpness: 0.6, repeats: 3 },
+  arch:     { amplitude: 8, sharpness: 0.0, repeats: 3 },
   square:   { amplitude: 6, cornerRadius: 0, repeats: 3 },
 };
 
@@ -173,33 +173,41 @@ function genStraight(_p, _segWidth, H) {
 }
 
 // Full sine wave centered at x=0: `repeats` complete cycles top→bottom.
-// x = amp * sin(2π * repeats * t)
-function genSine(p, _segWidth, H) {
-  const amp = p.amplitude * PX;
-  const N   = Math.max(60, p.repeats * 40);
-  const pts = [];
+// x = amp * sin(2π * repeats * t), clamped to ±segWidth/2.
+// When amp > halfSeg the wave travels along the boundary (flat-top).
+function genSine(p, segWidth, H) {
+  const amp     = p.amplitude * PX;
+  const halfSeg = segWidth / 2;
+  const N       = Math.max(60, p.repeats * 40);
+  const pts     = [];
   for (let s = 0; s <= N; s++) {
     const t = s / N;
-    pts.push(new paper.Point(amp * Math.sin(2 * Math.PI * p.repeats * t), t * H));
+    const x = Math.max(-halfSeg, Math.min(halfSeg,
+                amp * Math.sin(2 * Math.PI * p.repeats * t)));
+    pts.push(new paper.Point(x, t * H));
   }
   return new paper.Path(pts);
 }
 
 // `repeats` cubic-bezier arches, alternating left-right, top→bottom.
-// sharpness 0 = round arch, 1 = flat-top / gothic.
-function genArch(p, _segWidth, H) {
-  const amp   = p.amplitude * PX;
+// Each arch departs and returns to the centre line (x=0).
+// sharpness 0 = smooth round arch (CPs at ends),
+//            1 = pointed/gothic arch (CPs pulled toward midpoint).
+// CP x-coords = (4/3)*amp so the bezier peak actually reaches amp.
+function genArch(p, segWidth, H) {
+  const amp   = Math.min(p.amplitude * PX, segWidth / 2);
   const cellH = H / p.repeats;
-  const h     = cellH * (1 - p.sharpness) * 0.42;
+  const cpX   = (4 / 3) * amp;                     // ensures peak == amp
   const path  = new paper.Path();
   path.moveTo(new paper.Point(0, 0));
   for (let c = 0; c < p.repeats; c++) {
     const dir = c % 2 === 0 ? 1 : -1;
     const y0  = c * cellH;
     const y1  = y0 + cellH;
+    const hv  = (cellH / 2) * p.sharpness;         // 0 = round, 1 = pointed
     path.cubicCurveTo(
-      new paper.Point(amp * dir, y0 + h),
-      new paper.Point(amp * dir, y1 - h),
+      new paper.Point(cpX * dir, y0 + hv),
+      new paper.Point(cpX * dir, y1 - hv),
       new paper.Point(0,         y1)
     );
   }
@@ -208,8 +216,8 @@ function genArch(p, _segWidth, H) {
 
 // True square wave: alternates between x=+amp and x=-amp every half-period.
 // cornerRadius (cm) rounds each 90-degree joint with a bezier arc.
-function genSquare(p, _segWidth, H) {
-  const amp   = p.amplitude * PX;
+function genSquare(p, segWidth, H) {
+  const amp   = Math.min(p.amplitude * PX, segWidth / 2);
   const halfH = H / (p.repeats * 2);                        // height of one half-period
   const r     = Math.min((p.cornerRadius || 0) * PX,        // clamped corner radius
                          halfH * 0.45, amp * 0.9);
