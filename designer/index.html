@@ -105,6 +105,7 @@ canvas{display:block;background:#f4f0e8}
         <div id="gen-picker" class="hidden">
           <div data-gen="straight"><span class="gi">│</span>Straight</div>
           <div data-gen="sine"><span class="gi">∿</span>Sine Wave</div>
+          <div data-gen="oscillation"><span class="gi">〜</span>Oscillation</div>
           <div data-gen="arch"><span class="gi">⌒</span>Arch</div>
           <div data-gen="square"><span class="gi">⊓</span>Square Wave</div>
         </div>
@@ -147,18 +148,20 @@ let paperLs = {}; // id → paper.Layer
 const SEG_OPTS = [2, 4, 8, 16, 32];
 
 const GEN_META = {
-  straight: { label: 'Straight',    icon: '│' },
-  sine:     { label: 'Sine Wave',   icon: '∿' },
-  arch:     { label: 'Arch',        icon: '⌒' },
-  square:   { label: 'Square Wave', icon: '⊓' },
+  straight:    { label: 'Straight',    icon: '│' },
+  sine:        { label: 'Sine Wave',   icon: '∿' },
+  oscillation: { label: 'Oscillation', icon: '〜' },
+  arch:        { label: 'Arch',        icon: '⌒' },
+  square:      { label: 'Square Wave', icon: '⊓' },
 };
 
 // Generator-specific defaults. segments lives on the layer; repeats is per-generator.
 const GEN_DEF = {
-  straight: {},
-  sine:     { amplitude: 6, repeats: 3 },
-  arch:     { amplitude: 8, sharpness: 0.0, repeats: 3 },
-  square:   { amplitude: 6, cornerRadius: 0, repeats: 3 },
+  straight:    {},
+  sine:        { amplitude: 6, repeats: 3 },
+  oscillation: { amplitude: 8, sharpness: 0.0, repeats: 3 },
+  arch:        { depth: 60, sharpness: 0.0 },
+  square:      { amplitude: 6, cornerRadius: 0, repeats: 3 },
 };
 
 // ── Generators ───────────────────────────────────────────────────
@@ -189,12 +192,12 @@ function genSine(p, segWidth, H) {
   return new paper.Path(pts);
 }
 
-// `repeats` cubic-bezier arches, alternating left-right, top→bottom.
+// Oscillation: `repeats` cubic-bezier arches, alternating left-right, top→bottom.
 // Each arch departs and returns to the centre line (x=0).
 // sharpness 0 = smooth round arch (CPs at ends),
 //            1 = pointed/gothic arch (CPs pulled toward midpoint).
 // CP x-coords = (4/3)*amp so the bezier peak actually reaches amp.
-function genArch(p, segWidth, H) {
+function genOscillation(p, segWidth, H) {
   const amp   = Math.min(p.amplitude * PX, segWidth / 2);
   const cellH = H / p.repeats;
   const cpX   = (4 / 3) * amp;                     // ensures peak == amp
@@ -211,6 +214,36 @@ function genArch(p, segWidth, H) {
       new paper.Point(0,         y1)
     );
   }
+  return path;
+}
+
+// Arch: single decorative arch per segment.
+// Part 1 — quadratic bezier curve: departs from the top of the RIGHT segment
+//   boundary (halfW, 0), sweeps down-and-left, and arrives tangentially
+//   (vertically) at the LEFT boundary at y = depth.
+//   sharpness 0 = round/gentle sweep, 1 = steep drop before the turn.
+// Part 2 — straight line: runs straight down from the landing point to the
+//   bottom of the canvas, hugging the left boundary. Inset by half the stroke
+//   width so the full line thickness stays inside the segment.
+// Mirrored segments (L R L R) flip the arch to start from the left boundary.
+function genArch(p, segWidth, H, sw) {
+  const halfW  = segWidth / 2;
+  const halfSW = sw / 2;
+  const hit_y  = Math.min(p.depth * PX, H - 1);
+  // Control-point y: 0 = round sweep (CP near top), → hit_y = steep then sharp turn
+  const y_cp   = p.sharpness * hit_y;
+  // Landing x: inset by half stroke so the full stroke is inside the segment
+  const xLand  = -halfW + halfSW;
+
+  const path = new paper.Path();
+  path.moveTo(new paper.Point(halfW, 0));
+  // Quadratic bezier — tangency guaranteed because CP.x == xLand == landing.x
+  path.quadraticCurveTo(
+    new paper.Point(xLand, y_cp),
+    new paper.Point(xLand, hit_y)
+  );
+  // Straight line down the left boundary, inside the segment
+  path.lineTo(new paper.Point(xLand, H));
   return path;
 }
 
@@ -276,7 +309,7 @@ function genSquare(p, segWidth, H) {
   return path;
 }
 
-const GEN_FNS = { straight: genStraight, sine: genSine, arch: genArch, square: genSquare };
+const GEN_FNS = { straight: genStraight, sine: genSine, oscillation: genOscillation, arch: genArch, square: genSquare };
 
 // ── Segment placement ─────────────────────────────────────────────
 // basePath is centered at x=0. Stamp it once per segment, centered in
@@ -327,7 +360,8 @@ function drawIntoLayer(layer, pl) {
   if (!fn) return;
   const { W, H } = getPx();
   const segW     = W / layer.segments;
-  const spine    = fn(layer.params, segW, H);
+  const sw       = layer.style.strokeWidth * PX;
+  const spine    = fn(layer.params, segW, H, sw);
   drawSegments(layer, spine);
 }
 
@@ -451,10 +485,13 @@ function buildGenCtrls(layer) {
   if (layer.gen === 'sine')
     return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
          + repeats;
-  if (layer.gen === 'arch')
+  if (layer.gen === 'oscillation')
     return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
-         + srow('Sharpness',      'sharpness', 0, 1, 0.01, p.sharpness)
+         + srow('Sharpness',      'sharpness', 0, 1,  0.01, p.sharpness)
          + repeats;
+  if (layer.gen === 'arch')
+    return srow('Depth (cm)',  'depth',     1, 200, 1,    p.depth)
+         + srow('Sharpness',   'sharpness', 0, 0.95, 0.05, p.sharpness);
   if (layer.gen === 'square')
     return srow('Amplitude (cm)',      'amplitude',    0, 30, 0.5,  p.amplitude)
          + srow('Corner radius (cm)',  'cornerRadius', 0, 15, 0.25, p.cornerRadius)
