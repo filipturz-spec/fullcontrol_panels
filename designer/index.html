@@ -1,63 +1,472 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Partition Screen Designer</title>
-  <link rel="stylesheet" href="css/style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Partition Screen Designer</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#1a1a1e;--surface:#26262e;--surface2:#2e2e38;--border:#3a3a48;
+  --accent:#7c6fff;--accent2:#a89bff;--text:#e0dff8;--text-dim:#8888aa;
+  --danger:#ff6b6b;--radius:6px;
+}
+body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;font-size:13px;height:100vh;overflow:hidden}
+#app{display:flex;height:100vh}
+/* Sidebar */
+#sidebar{width:300px;min-width:300px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+#sidebar-header{height:48px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid var(--border);flex-shrink:0}
+.app-title{font-weight:700;font-size:14px;color:var(--accent2)}
+#add-layer-wrap{position:relative}
+#add-layer-btn{background:var(--accent);color:#fff;border:none;border-radius:var(--radius);padding:5px 12px;cursor:pointer;font-size:12px;font-weight:600}
+#add-layer-btn:hover{background:var(--accent2)}
+#generator-picker{position:absolute;top:calc(100% + 6px);right:0;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);min-width:200px;z-index:100;box-shadow:0 8px 24px rgba(0,0,0,.5);padding:4px 0}
+#generator-picker.hidden{display:none}
+.picker-label{padding:6px 12px 4px;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em}
+.picker-item{padding:8px 14px;cursor:pointer;display:flex;align-items:center;gap:8px}
+.picker-item:hover{background:var(--border)}
+.pi-icon{font-size:16px}.pi-name{font-weight:500;font-size:12px}.pi-desc{font-size:11px;color:var(--text-dim)}
+/* Layers */
+#layers-panel{flex:1;overflow-y:auto;padding:8px 0}
+.layer-card{margin:4px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.layer-header{display:flex;align-items:center;padding:8px 10px;cursor:pointer;gap:8px;user-select:none}
+.layer-header:hover{background:rgba(255,255,255,.03)}
+.layer-vis{width:16px;height:16px;border-radius:3px;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:10px;flex-shrink:0;cursor:pointer}
+.layer-vis.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.layer-vis.off{background:transparent;color:var(--text-dim)}
+.layer-type-badge{font-size:10px;font-weight:700;text-transform:uppercase;color:var(--accent2);background:rgba(124,111,255,.15);padding:2px 6px;border-radius:3px;flex-shrink:0}
+.layer-name{flex:1;font-weight:500;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.layer-del{background:none;border:none;color:var(--text-dim);cursor:pointer;padding:2px 4px;border-radius:3px;font-size:14px;line-height:1;flex-shrink:0}
+.layer-del:hover{background:var(--danger);color:#fff}
+.layer-chevron{font-size:10px;color:var(--text-dim);transition:transform .15s;flex-shrink:0}
+.layer-card.open .layer-chevron{transform:rotate(90deg)}
+/* Controls */
+.layer-controls{display:none;padding:0 10px 10px;border-top:1px solid var(--border)}
+.layer-card.open .layer-controls{display:block}
+.ctrl-section{margin-top:10px}
+.ctrl-section-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:6px;padding-bottom:4px;border-bottom:1px solid var(--border)}
+.ctrl-row{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.ctrl-label{width:110px;flex-shrink:0;color:var(--text-dim);font-size:11px}
+.ctrl-slider{flex:1;accent-color:var(--accent);cursor:pointer}
+.ctrl-number{width:46px;background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:2px 5px;font-size:12px;text-align:right}
+.ctrl-checkbox-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;color:var(--text-dim);font-size:11px;cursor:pointer}
+.ctrl-checkbox-row input{accent-color:var(--accent)}
+/* Zone editor */
+.zones-editor{margin-top:4px}
+.zone-row{display:grid;grid-template-columns:1fr 1fr 22px;gap:4px;margin-bottom:4px;align-items:center}
+.zone-row input{background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:3px 5px;font-size:11px;width:100%}
+.zone-del{background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:13px;line-height:1}
+.zone-del:hover{color:var(--danger)}
+.btn-add-zone{background:none;border:1px dashed var(--border);color:var(--text-dim);border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer;width:100%;margin-top:2px}
+.btn-add-zone:hover{border-color:var(--accent);color:var(--accent)}
+/* Footer */
+#sidebar-footer{height:48px;display:flex;align-items:center;gap:6px;padding:0 10px;border-top:1px solid var(--border);flex-shrink:0}
+#sidebar-footer button,.load-json-label{flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);padding:5px 6px;font-size:11px;cursor:pointer;text-align:center;white-space:nowrap}
+#sidebar-footer button:hover,.load-json-label:hover{border-color:var(--accent);color:var(--accent)}
+#btn-export-svg{font-weight:600}
+/* Canvas */
+#canvas-wrap{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
+#canvas-toolbar{height:40px;display:flex;align-items:center;gap:16px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0;font-size:12px;color:var(--text-dim)}
+#canvas-toolbar label{display:flex;align-items:center;gap:6px;white-space:nowrap}
+#canvas-toolbar input[type=number]{width:56px;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:3px 5px;font-size:12px;text-align:right}
+#zoom-slider{width:80px;accent-color:var(--accent)}
+#zoom-label{min-width:32px}
+#canvas-scroll{flex:1;overflow:auto;padding:32px}
+#canvas-inner{display:inline-block;box-shadow:0 8px 40px rgba(0,0,0,.6);transform-origin:top left}
+#main-canvas{display:block;background:#f5f0e8}
+::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+#layers-empty{text-align:center;color:var(--text-dim);padding:32px 16px;font-size:12px;line-height:1.8}
+#layers-empty .ei{font-size:28px;display:block;margin-bottom:8px}
+</style>
 </head>
 <body>
-  <div id="app">
-
-    <aside id="sidebar">
-      <div id="sidebar-header">
-        <span class="app-title">Screen Designer</span>
-        <div id="add-layer-wrap">
-          <button id="add-layer-btn" title="Add a new pattern layer">+ Layer</button>
-          <div id="generator-picker" class="hidden">
-            <div class="picker-label">Choose generator</div>
-          </div>
-        </div>
+<div id="app">
+  <aside id="sidebar">
+    <div id="sidebar-header">
+      <span class="app-title">Screen Designer</span>
+      <div id="add-layer-wrap">
+        <button id="add-layer-btn">+ Layer</button>
+        <div id="generator-picker" class="hidden"><div class="picker-label">Choose generator</div></div>
       </div>
+    </div>
+    <div id="layers-panel"><div id="layers-list"></div></div>
+    <div id="sidebar-footer">
+      <button id="btn-export-svg">Export SVG</button>
+      <button id="btn-save-json">Save JSON</button>
+      <label class="load-json-label">Load JSON<input type="file" id="file-load-json" accept=".json" style="display:none"></label>
+    </div>
+  </aside>
+  <main id="canvas-wrap">
+    <div id="canvas-toolbar">
+      <label>Canvas
+        <input type="number" id="canvas-w" value="600" min="200" max="1600" step="10"> x
+        <input type="number" id="canvas-h" value="900" min="200" max="2400" step="10"> px
+      </label>
+      <label>Zoom <input type="range" id="zoom-slider" min="20" max="200" value="75" step="5"> <span id="zoom-label">75%</span></label>
+      <label style="margin-left:auto"><input type="checkbox" id="show-grid"> Grid</label>
+    </div>
+    <div id="canvas-scroll"><div id="canvas-inner"><canvas id="main-canvas"></canvas></div></div>
+  </main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/paper.js/0.12.17/paper-full.min.js"></script>
+<script>
+// ================================================================
+// GENERATORS
+// ================================================================
+var GENERATORS = {
+  diamond:     { type:'diamond',     label:'Diamond Grid',       icon:'\u25C6', description:'Two crossing wave arrays forming diamonds',          defaults:{ cols:9,  amplitude:38, freqTop:3.5, freqBottom:2.0, phaseStep:1.0, angle:0, strokeWeight:2.5, color:'#8B6914' } },
+  zigzag:      { type:'zigzag',      label:'Zigzag / Triangle',  icon:'\u25B2', description:'Straight lines forming triangular lattice',          defaults:{ cols:11, rows:10, compress:0.4, curvature:0, strokeWeight:2.5, color:'#8B6914' } },
+  ladder:      { type:'ladder',      label:'Ladder / Barcode',   icon:'\u2630', description:'Parallel verticals with horizontal rungs in zones',  defaults:{ cols:12, strokeWeight:2.5, color:'#8B6914', zones:[{heightFrac:0.15,rungs:14},{heightFrac:0.15,rungs:8},{heightFrac:0.15,rungs:4},{heightFrac:0.15,rungs:2},{heightFrac:0.40,rungs:0}] } },
+  roundedRect: { type:'roundedRect', label:'Rounded Rect Grid',  icon:'\u25A2', description:'Grid of rounded rectangles, optionally linked',      defaults:{ cols:5,  rows:8, gapX:10, gapY:10, cornerRadius:18, linkH:false, linkV:false, strokeWeight:3, color:'#7a2a10' } }
+};
+var GEN_ORDER = ['diamond','zigzag','ladder','roundedRect'];
 
-      <div id="layers-panel">
-        <div id="layers-list"></div>
-      </div>
+function genDiamond(p, W, H) {
+  var cols=+p.cols||9, amp=+p.amplitude||38, freqT=+p.freqTop||3.5, freqB=+p.freqBottom||2,
+      ps=+p.phaseStep||1, ang=+p.angle||0, sw=+p.strokeWeight||2.5, col=p.color||'#8B6914';
+  var g = new paper.Group(), PTS=120, lean=ang*Math.PI/180, drift=H*Math.tan(lean), sp=W/(cols+1);
+  for (var fam=0; fam<2; fam++) {
+    var dir=fam===0?1:-1, fshift=fam===0?0:Math.PI;
+    for (var c=0; c<cols; c++) {
+      var cx=sp*(c+1), poff=(c/cols)*2*Math.PI*ps+fshift, pts=[];
+      for (var i=0; i<=PTS; i++) {
+        var t=i/PTS, phase=2*Math.PI*(freqT*t+(freqB-freqT)*t*t/2);
+        pts.push(new paper.Point(cx+(t-0.5)*drift+dir*amp*Math.sin(phase+poff), t*H));
+      }
+      var path=new paper.Path(); path.addSegments(pts.map(function(q){return new paper.Segment(q);}));
+      path.smooth({type:'catmull-rom',factor:0.5}); path.strokeColor=col; path.strokeWidth=sw; path.fillColor=null; path.strokeCap='round';
+      g.addChild(path);
+    }
+  }
+  return g;
+}
 
-      <div id="sidebar-footer">
-        <button id="btn-export-svg">Export SVG</button>
-        <button id="btn-save-json">Save JSON</button>
-        <label id="btn-load-json-wrap">Load JSON
-          <input type="file" id="file-load-json" accept=".json" style="display:none">
-        </label>
-      </div>
-    </aside>
+function genZigzag(p, W, H) {
+  var cols=+p.cols||11, rows=+p.rows||10, comp=+p.compress||0, curv=+p.curvature||0,
+      sw=+p.strokeWeight||2.5, col=p.color||'#8B6914';
+  var g=new paper.Group(), rawH=[], total=0;
+  for (var r=0; r<=rows; r++) { var t=rows>1?r/rows:0.5; var h=Math.max(0.05,1+comp*(2*t-1)); rawH.push(h); total+=h; }
+  var sc=H/total, rowY=[0];
+  for (var r=0; r<=rows; r++) rowY.push(rowY[r]+rawH[r]*sc);
+  var cs=W/cols;
+  function vtx(row,col2){var odd=row%2===1; return new paper.Point(odd?(col2+0.5)*cs:col2*cs, rowY[row]);}
+  function seg(a,b){
+    var path=new paper.Path();
+    if (Math.abs(curv)<0.001){ path.add(a,b); }
+    else {
+      var mid=a.add(b).divide(2), dx=b.x-a.x, dy=b.y-a.y, len=Math.sqrt(dx*dx+dy*dy);
+      var ctrl=mid.add(new paper.Point(-dy/len*curv*len*0.25, dx/len*curv*len*0.25));
+      path.add(a); path.quadraticCurveTo(ctrl,b);
+    }
+    path.strokeColor=col; path.strokeWidth=sw; path.fillColor=null; path.strokeCap='round';
+    g.addChild(path);
+  }
+  for (var r=0; r<=rows; r++) {
+    var odd=r%2===1, cc=odd?cols-1:cols;
+    for (var c=0; c<=cc; c++) {
+      var v=vtx(r,c);
+      if (r<rows) {
+        if (!odd){ if(c>0)seg(v,vtx(r+1,c-1)); if(c<cols)seg(v,vtx(r+1,c)); }
+        else { seg(v,vtx(r+1,c)); if(c+1<=cols)seg(v,vtx(r+1,c+1)); }
+      }
+    }
+  }
+  return g;
+}
 
-    <main id="canvas-wrap">
-      <div id="canvas-toolbar">
-        <label>Canvas
-          <input type="number" id="canvas-w" value="600" min="200" max="1600" step="10"> ×
-          <input type="number" id="canvas-h" value="900" min="200" max="2400" step="10"> px
-        </label>
-        <label>Zoom
-          <input type="range" id="zoom-slider" min="20" max="200" value="80" step="5">
-          <span id="zoom-label">80%</span>
-        </label>
-        <label style="margin-left:auto">
-          <input type="checkbox" id="show-grid"> Grid
-        </label>
-      </div>
-      <div id="canvas-scroll">
-        <div id="canvas-inner">
-          <canvas id="main-canvas"></canvas>
-        </div>
-      </div>
-    </main>
+function genLadder(p, W, H) {
+  var cols=+p.cols||12, sw=+p.strokeWeight||2.5, col=p.color||'#8B6914',
+      zones=p.zones||[{heightFrac:0.2,rungs:8},{heightFrac:0.8,rungs:0}];
+  var g=new paper.Group(), cs=W/(cols+1);
+  for (var c=1; c<=cols; c++) {
+    var path=new paper.Path(); path.add(new paper.Point(c*cs,0)); path.add(new paper.Point(c*cs,H));
+    path.strokeColor=col; path.strokeWidth=sw; path.fillColor=null; path.strokeCap='butt'; g.addChild(path);
+  }
+  var tf=zones.reduce(function(s,z){return s+Math.max(0,+z.heightFrac||0);},0)||1, cy=0;
+  zones.forEach(function(zone){
+    var zH=(+zone.heightFrac/tf)*H, n=Math.round(+zone.rungs||0);
+    if (n>0){ var step=zH/(n+1); for(var r=1;r<=n;r++){ var path=new paper.Path(); path.add(new paper.Point(cs,cy+r*step)); path.add(new paper.Point(cols*cs,cy+r*step)); path.strokeColor=col; path.strokeWidth=sw; path.fillColor=null; path.strokeCap='butt'; g.addChild(path); } }
+    cy+=zH;
+  });
+  return g;
+}
 
-  </div>
+function genRoundedRect(p, W, H) {
+  var cols=+p.cols||5, rows=+p.rows||8, gx=+p.gapX||10, gy=+p.gapY||10,
+      cr=+p.cornerRadius||18, lh=p.linkH, lv=p.linkV, sw=+p.strokeWeight||3, col=p.color||'#7a2a10';
+  var g=new paper.Group(), cw=(W-(cols+1)*gx)/cols, ch=(H-(rows+1)*gy)/rows, r=Math.min(cr,cw/2,ch/2);
+  for (var row=0; row<rows; row++) for (var c=0; c<cols; c++) {
+    var x=gx+c*(cw+gx), y=gy+row*(ch+gy);
+    var rect=new paper.Path.Rectangle({point:[x,y],size:[cw,ch],radius:r});
+    rect.strokeColor=col; rect.strokeWidth=sw; rect.fillColor=null; g.addChild(rect);
+    if (lh&&c<cols-1){ var lk=new paper.Path(); lk.add(new paper.Point(x+cw,y+ch/2)); lk.add(new paper.Point(x+cw+gx,y+ch/2)); lk.strokeColor=col; lk.strokeWidth=sw*0.5; lk.fillColor=null; g.addChild(lk); }
+    if (lv&&row<rows-1){ var lk=new paper.Path(); lk.add(new paper.Point(x+cw/2,y+ch)); lk.add(new paper.Point(x+cw/2,y+ch+gy)); lk.strokeColor=col; lk.strokeWidth=sw*0.5; lk.fillColor=null; g.addChild(lk); }
+  }
+  return g;
+}
 
-  <!-- Paper.js -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/paper.js/0.12.17/paper-full.min.js"></script>
-  <script type="module" src="js/main.js"></script>
+var GEN_FN = {diamond:genDiamond, zigzag:genZigzag, ladder:genLadder, roundedRect:genRoundedRect};
+
+// ================================================================
+// STATE
+// ================================================================
+var _uid=1;
+var App = { canvasW:600, canvasH:900, zoom:75, showGrid:false, layers:[] };
+var _paperLayers={};
+
+function clone(o){return JSON.parse(JSON.stringify(o));}
+function addLayer(type){
+  var g=GENERATORS[type];
+  var l={id:_uid++, type:type, name:g.label+' '+(App.layers.length+1), visible:true, params:clone(g.defaults)};
+  App.layers.push(l); renderSidebar(); fullRedraw(); return l;
+}
+function removeLayer(id){ App.layers=App.layers.filter(function(l){return l.id!==id;}); renderSidebar(); fullRedraw(); }
+function toggleVis(id){
+  var l=App.layers.find(function(l){return l.id===id;});
+  if(!l)return; l.visible=!l.visible;
+  var pl=_paperLayers[id]; if(pl){pl.visible=l.visible; paper.view.update();}
+  renderSidebar();
+}
+function setParam(id,key,val){ var l=App.layers.find(function(l){return l.id===id;}); if(l)l.params[key]=val; }
+function setZoneP(id,zi,key,val){ var l=App.layers.find(function(l){return l.id===id;}); if(l&&l.params.zones)l.params.zones[zi][key]=val; }
+function addZone(id){ var l=App.layers.find(function(l){return l.id===id;}); if(l&&l.params.zones)l.params.zones.push({heightFrac:0.1,rungs:3}); }
+function delZone(id,zi){ var l=App.layers.find(function(l){return l.id===id;}); if(l&&l.params.zones&&l.params.zones.length>1)l.params.zones.splice(zi,1); }
+
+// ================================================================
+// RENDERER
+// ================================================================
+var _W=600,_H=900;
+function initCanvas(){
+  paper.setup(document.getElementById('main-canvas'));
+  paper.view.autoUpdate=true;
+}
+function setCanvasSize(w,h){
+  _W=w; _H=h;
+  var cv=paper.view.element; cv.width=w; cv.height=h;
+  paper.view.viewSize=new paper.Size(w,h);
+}
+function setZoom(z){
+  var inner=document.getElementById('canvas-inner');
+  inner.style.transform='scale('+(z/100)+')'; inner.style.width=_W+'px'; inner.style.height=_H+'px';
+}
+function fullRedraw(){
+  paper.project.clear(); _paperLayers={};
+  if(App.showGrid){
+    var gl=new paper.Layer(); gl.activate();
+    for(var x=0;x<=_W;x+=50){var p=new paper.Path({strokeColor:'rgba(0,0,0,0.07)',strokeWidth:1});p.add(new paper.Point(x,0),new paper.Point(x,_H));}
+    for(var y=0;y<=_H;y+=50){var p=new paper.Path({strokeColor:'rgba(0,0,0,0.07)',strokeWidth:1});p.add(new paper.Point(0,y),new paper.Point(_W,y));}
+  }
+  App.layers.forEach(function(ls){
+    var pl=new paper.Layer(); pl.activate(); pl.visible=ls.visible;
+    var fn=GEN_FN[ls.type]; if(fn)pl.addChild(fn(ls.params,_W,_H));
+    _paperLayers[ls.id]=pl;
+  });
+  paper.view.update();
+}
+var _timers={};
+function redrawOne(id){
+  if(_timers[id])clearTimeout(_timers[id]);
+  _timers[id]=setTimeout(function(){
+    delete _timers[id];
+    var ls=App.layers.find(function(l){return l.id===id;});
+    var pl=_paperLayers[id];
+    if(!ls||!pl){fullRedraw();return;}
+    pl.activate(); pl.removeChildren();
+    var fn=GEN_FN[ls.type]; if(fn)pl.addChild(fn(ls.params,_W,_H));
+    paper.view.update();
+  },16);
+}
+
+// ================================================================
+// UI CONTROLS BUILDER
+// ================================================================
+function srow(label,key,min,max,step,val){
+  return '<div class="ctrl-row"><span class="ctrl-label">'+label+'</span>'
+    +'<input class="ctrl-slider" type="range" data-k="'+key+'" min="'+min+'" max="'+max+'" step="'+step+'" value="'+val+'">'
+    +'<input class="ctrl-number" type="number" data-kn="'+key+'" min="'+min+'" max="'+max+'" step="'+step+'" value="'+val+'"></div>';
+}
+function crow(label,key,val){
+  return '<div class="ctrl-row"><span class="ctrl-label">'+label+'</span>'
+    +'<input type="color" data-k="'+key+'" value="'+(val||'#8B6914')+'" style="flex:1;height:26px;border:none;background:none;cursor:pointer;border-radius:4px;"></div>';
+}
+function chkrow(label,key,checked){
+  return '<label class="ctrl-checkbox-row"><input type="checkbox" data-k="'+key+'"'+(checked?' checked':'')+'>'+label+'</label>';
+}
+function buildControls(layer){
+  var p=layer.params;
+  if(layer.type==='diamond')return '<div class="ctrl-section"><div class="ctrl-section-title">Pattern</div>'
+    +srow('Columns','cols',3,24,1,p.cols)+srow('Amplitude','amplitude',5,120,1,p.amplitude)
+    +srow('Freq Top','freqTop',0.5,8,0.1,p.freqTop)+srow('Freq Bottom','freqBottom',0.5,8,0.1,p.freqBottom)
+    +srow('Phase Step','phaseStep',0,3,0.05,p.phaseStep)+srow('Lean Angle','angle',-30,30,1,p.angle)
+    +'</div><div class="ctrl-section"><div class="ctrl-section-title">Style</div>'
+    +srow('Stroke','strokeWeight',0.5,8,0.5,p.strokeWeight)+crow('Color','color',p.color)+'</div>';
+  if(layer.type==='zigzag')return '<div class="ctrl-section"><div class="ctrl-section-title">Pattern</div>'
+    +srow('Columns','cols',3,28,1,p.cols)+srow('Rows','rows',2,30,1,p.rows)
+    +srow('Compress','compress',-1,1,0.05,p.compress)+srow('Curvature','curvature',-2,2,0.05,p.curvature)
+    +'</div><div class="ctrl-section"><div class="ctrl-section-title">Style</div>'
+    +srow('Stroke','strokeWeight',0.5,8,0.5,p.strokeWeight)+crow('Color','color',p.color)+'</div>';
+  if(layer.type==='ladder'){
+    var zh=p.zones.map(function(z,i){
+      return '<div class="zone-row"><input type="number" data-zi="'+i+'" data-zk="heightFrac" value="'+z.heightFrac+'" min="0.01" max="1" step="0.01" title="Height fraction">'
+        +'<input type="number" data-zi="'+i+'" data-zk="rungs" value="'+z.rungs+'" min="0" max="40" step="1" title="Rungs">'
+        +'<button class="zone-del" data-zdel="'+i+'">x</button></div>';
+    }).join('');
+    return '<div class="ctrl-section"><div class="ctrl-section-title">Columns</div>'+srow('Columns','cols',2,30,1,p.cols)+'</div>'
+      +'<div class="ctrl-section"><div class="ctrl-section-title">Zones (height frac / rungs)</div>'
+      +'<div class="zones-editor">'+zh+'</div><button class="btn-add-zone">+ Add Zone</button></div>'
+      +'<div class="ctrl-section"><div class="ctrl-section-title">Style</div>'
+      +srow('Stroke','strokeWeight',0.5,8,0.5,p.strokeWeight)+crow('Color','color',p.color)+'</div>';
+  }
+  if(layer.type==='roundedRect')return '<div class="ctrl-section"><div class="ctrl-section-title">Grid</div>'
+    +srow('Columns','cols',2,12,1,p.cols)+srow('Rows','rows',2,20,1,p.rows)
+    +srow('Gap X','gapX',0,40,1,p.gapX)+srow('Gap Y','gapY',0,40,1,p.gapY)
+    +srow('Corner Radius','cornerRadius',0,60,1,p.cornerRadius)
+    +'</div><div class="ctrl-section"><div class="ctrl-section-title">Links</div>'
+    +chkrow('Horizontal links','linkH',p.linkH)+chkrow('Vertical links','linkV',p.linkV)
+    +'</div><div class="ctrl-section"><div class="ctrl-section-title">Style</div>'
+    +srow('Stroke','strokeWeight',0.5,8,0.5,p.strokeWeight)+crow('Color','color',p.color)+'</div>';
+  return '';
+}
+
+// ================================================================
+// SIDEBAR RENDER
+// ================================================================
+function renderSidebar(){
+  var list=document.getElementById('layers-list');
+  var openIds=new Set();
+  list.querySelectorAll('.layer-card.open').forEach(function(el){openIds.add(+el.dataset.id);});
+  list.innerHTML='';
+  if(!App.layers.length){
+    list.innerHTML='<div id="layers-empty"><span class="ei">&#9672;</span>No layers yet.<br>Click <strong>+ Layer</strong> to begin.</div>';
+    return;
+  }
+  App.layers.slice().reverse().forEach(function(layer){
+    var g=GENERATORS[layer.type];
+    var open=openIds.has(layer.id);
+    var card=document.createElement('div');
+    card.className='layer-card'+(open?' open':''); card.dataset.id=layer.id;
+    card.innerHTML='<div class="layer-header">'
+      +'<div class="layer-vis '+(layer.visible?'on':'off')+'" data-vis="1">'+(layer.visible?'\u25CF':'\u25CB')+'</div>'
+      +'<span class="layer-type-badge">'+g.icon+' '+layer.type+'</span>'
+      +'<span class="layer-name">'+layer.name+'</span>'
+      +'<span class="layer-chevron">&#8250;</span>'
+      +'<button class="layer-del" data-del="1" title="Delete">&#x2715;</button>'
+      +'</div><div class="layer-controls">'+buildControls(layer)+'</div>';
+
+    card.querySelector('.layer-header').addEventListener('click',function(e){
+      if(e.target.closest('[data-del]')){ removeLayer(layer.id); return; }
+      if(e.target.closest('[data-vis]')){ toggleVis(layer.id); return; }
+      card.classList.toggle('open');
+    });
+
+    // Wire sliders
+    card.querySelectorAll('.ctrl-slider').forEach(function(sl){
+      var k=sl.dataset.k, num=card.querySelector('[data-kn="'+k+'"]');
+      function upd(v){ setParam(layer.id,k,parseFloat(v)); if(num)num.value=v; redrawOne(layer.id); }
+      sl.addEventListener('input',function(e){if(num)num.value=e.target.value; upd(e.target.value);});
+      if(num)num.addEventListener('change',function(e){sl.value=e.target.value; upd(e.target.value);});
+    });
+    // Color
+    card.querySelectorAll('input[type=color]').forEach(function(el){
+      el.addEventListener('input',function(e){setParam(layer.id,el.dataset.k,e.target.value); redrawOne(layer.id);});
+    });
+    // Checkbox
+    card.querySelectorAll('input[type=checkbox]').forEach(function(el){
+      el.addEventListener('change',function(e){setParam(layer.id,el.dataset.k,e.target.checked); redrawOne(layer.id);});
+    });
+    // Zone inputs
+    card.querySelectorAll('[data-zk]').forEach(function(el){
+      el.addEventListener('change',function(){
+        var zi=+el.dataset.zi,k=el.dataset.zk;
+        setZoneP(layer.id,zi,k,k==='rungs'?parseInt(el.value):parseFloat(el.value));
+        redrawOne(layer.id);
+      });
+    });
+    // Zone delete
+    card.querySelectorAll('[data-zdel]').forEach(function(btn){
+      btn.addEventListener('click',function(){delZone(layer.id,+btn.dataset.zdel); renderSidebar(); redrawOne(layer.id);});
+    });
+    // Add zone
+    var azb=card.querySelector('.btn-add-zone');
+    if(azb)azb.addEventListener('click',function(){addZone(layer.id); renderSidebar(); redrawOne(layer.id);});
+
+    list.appendChild(card);
+  });
+}
+
+// ================================================================
+// MAIN
+// ================================================================
+window.addEventListener('DOMContentLoaded',function(){
+  initCanvas(); setCanvasSize(App.canvasW,App.canvasH); setZoom(App.zoom); renderSidebar(); fullRedraw();
+
+  // Generator picker
+  var picker=document.getElementById('generator-picker');
+  GEN_ORDER.forEach(function(type){
+    var g=GENERATORS[type]; var item=document.createElement('div'); item.className='picker-item';
+    item.innerHTML='<span class="pi-icon">'+g.icon+'</span><span><div class="pi-name">'+g.label+'</div><div class="pi-desc">'+g.description+'</div></span>';
+    item.addEventListener('click',function(){addLayer(type); picker.classList.add('hidden');});
+    picker.appendChild(item);
+  });
+  document.getElementById('add-layer-btn').addEventListener('click',function(e){e.stopPropagation();picker.classList.toggle('hidden');});
+  document.addEventListener('click',function(){picker.classList.add('hidden');});
+  picker.addEventListener('click',function(e){e.stopPropagation();});
+
+  // Canvas size
+  function onResize(){
+    var w=Math.max(100,parseInt(document.getElementById('canvas-w').value)||600);
+    var h=Math.max(100,parseInt(document.getElementById('canvas-h').value)||900);
+    App.canvasW=w; App.canvasH=h; setCanvasSize(w,h); setZoom(App.zoom); fullRedraw();
+  }
+  document.getElementById('canvas-w').addEventListener('change',onResize);
+  document.getElementById('canvas-h').addEventListener('change',onResize);
+
+  // Zoom
+  document.getElementById('zoom-slider').addEventListener('input',function(e){
+    App.zoom=+e.target.value; document.getElementById('zoom-label').textContent=App.zoom+'%'; setZoom(App.zoom);
+  });
+
+  // Grid
+  document.getElementById('show-grid').addEventListener('change',function(e){App.showGrid=e.target.checked; fullRedraw();});
+
+  // Export SVG
+  document.getElementById('btn-export-svg').addEventListener('click',function(){
+    var svg=paper.project.exportSVG({asString:true,bounds:'view'});
+    svg=svg.replace(/(<svg[^>]*?)>/,'$1 width="'+App.canvasW+'mm" height="'+App.canvasH+'mm" viewBox="0 0 '+App.canvasW+' '+App.canvasH+'">');
+    dl('partition-screen.svg',svg,'image/svg+xml');
+  });
+
+  // Save JSON
+  document.getElementById('btn-save-json').addEventListener('click',function(){
+    dl('partition-screen.json',JSON.stringify({canvasW:App.canvasW,canvasH:App.canvasH,layers:App.layers},null,2),'application/json');
+  });
+
+  // Load JSON
+  document.getElementById('file-load-json').addEventListener('change',function(e){
+    var file=e.target.files[0]; if(!file)return;
+    var r=new FileReader(); r.onload=function(ev){
+      try{
+        var d=JSON.parse(ev.target.result);
+        App.canvasW=d.canvasW||600; App.canvasH=d.canvasH||900; App.layers=d.layers||[];
+        _uid=App.layers.reduce(function(m,l){return Math.max(m,l.id);},0)+1;
+        document.getElementById('canvas-w').value=App.canvasW;
+        document.getElementById('canvas-h').value=App.canvasH;
+        setCanvasSize(App.canvasW,App.canvasH); setZoom(App.zoom); renderSidebar(); fullRedraw();
+      }catch(err){alert('Load error: '+err.message);}
+    }; r.readAsText(file); e.target.value='';
+  });
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown',function(e){
+    if((e.ctrlKey||e.metaKey)&&e.key==='s'){e.preventDefault();document.getElementById('btn-save-json').click();}
+    if((e.ctrlKey||e.metaKey)&&e.key==='e'){e.preventDefault();document.getElementById('btn-export-svg').click();}
+  });
+});
+
+function dl(name,text,mime){
+  var b=new Blob([text],{type:mime}),u=URL.createObjectURL(b),a=document.createElement('a');
+  a.href=u;a.download=name;a.click();URL.revokeObjectURL(u);
+}
+</script>
 </body>
 </html>
