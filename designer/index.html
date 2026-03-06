@@ -271,13 +271,15 @@ function drawColumns(layer, basePath) {
   }
 }
 
-// Faint dashed lines at this layer's segment boundaries.
+// Faint vertical dashed lines at each column's neutral spine position.
+// Segments are vertical strips — their dividing lines run top-to-bottom.
 function drawSegmentLines(layer) {
   const { W, H } = getPx();
-  const cellH = H / layer.segments;
-  for (let i = 1; i < layer.segments; i++) {
-    const y    = i * cellH;
-    const line = new paper.Path([new paper.Point(0, y), new paper.Point(W, y)]);
+  const n       = layer.columns;
+  const spacing = n > 1 ? W / (n - 1) : 0;
+  for (let i = 0; i < n; i++) {
+    const x    = i * spacing;
+    const line = new paper.Path([new paper.Point(x, 0), new paper.Point(x, H)]);
     line.strokeColor = new paper.Color(0, 0, 0, 0.18);
     line.strokeWidth = 0.5;
     line.dashArray   = [5, 5];
