@@ -182,7 +182,7 @@ function genSine(p, segs, H) {
     for (let s = 0; s <= N; s++) {
       const t = s / N;
       pts.push(new paper.Point(
-        amp * 0.5 * (1 - Math.cos(Math.PI * t)),
+        amp * Math.sin(Math.PI * t),
         c * cellH + t * cellH
       ));
     }
