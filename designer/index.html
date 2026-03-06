@@ -332,7 +332,9 @@ function drawSegments(layer, basePath) {
     path.translate(new paper.Point(cx, 0));
     const flip = layer.direction === 'RRRR' ||
                  (layer.direction === 'LRLR' && i % 2 === 1);
-    if (flip) path.scale(-1, 1, new paper.Point(cx, H / 2));
+    // Flip horizontally around the segment centre cx.
+    // Matrix(-1,0,0,1, 2*cx,0) maps x → 2*cx − x, y → y.
+    if (flip) path.transform(new paper.Matrix(-1, 0, 0, 1, 2 * cx, 0));
     path.strokeColor = new paper.Color(layer.style.color);
     path.strokeWidth = layer.style.strokeWidth * PX;
     path.fillColor   = null;
