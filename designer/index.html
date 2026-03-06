@@ -17,7 +17,7 @@ body{background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;font-
 .hidden{display:none!important}
 
 /* ── Sidebar ── */
-#sidebar{width:290px;min-width:290px;background:var(--sf);border-right:1px solid var(--bd);display:flex;flex-direction:column;overflow:hidden}
+#sidebar{width:380px;min-width:380px;background:var(--sf);border-right:1px solid var(--bd);display:flex;flex-direction:column;overflow:hidden}
 .sb-hdr{padding:11px 12px;border-bottom:1px solid var(--bd);flex-shrink:0;font-weight:700;font-size:13px;color:var(--ac2);letter-spacing:.02em}
 .sb-sec{padding:10px 12px;border-bottom:1px solid var(--bd);flex-shrink:0}
 .sec-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--dm);margin-bottom:8px}
@@ -243,7 +243,7 @@ function drawSegments(layer, basePath) {
 
   for (let i = 0; i < n; i++) {
     const cx   = (i + 0.5) * segW;   // centre x of this strip
-    const path = i === 0 ? basePath : basePath.clone();
+    const path = basePath.clone();    // always clone — basePath stays at x=0
     path.translate(new paper.Point(cx, 0));
     if (layer.mirror && i % 2 === 1) path.scale(-1, 1, new paper.Point(cx, H / 2));
     path.strokeColor = new paper.Color(layer.style.color);
@@ -252,6 +252,7 @@ function drawSegments(layer, basePath) {
     path.strokeCap   = 'round';
     path.strokeJoin  = 'round';
   }
+  basePath.remove(); // discard the untranslated original
 }
 
 // Faint dashed vertical lines at internal segment boundaries.
