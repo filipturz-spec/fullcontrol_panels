@@ -24,7 +24,6 @@ body{background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;font-
 .panel-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .pi{display:flex;flex-direction:column;gap:3px}
 .pi label{font-size:10px;color:var(--dm)}
-.pi.full{grid-column:1/-1}
 .pi input{background:var(--sf2);border:1px solid var(--bd);color:var(--tx);border-radius:4px;padding:4px 6px;font-size:12px;width:100%}
 
 /* ── Layers ── */
@@ -65,10 +64,6 @@ body{background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;font-
 .cnum{width:44px;background:var(--sf);border:1px solid var(--bd);color:var(--tx);border-radius:3px;padding:2px 4px;font-size:11px;text-align:right}
 .csel{flex:1;background:var(--sf);border:1px solid var(--bd);color:var(--tx);border-radius:3px;padding:3px 5px;font-size:11px}
 .ccol{flex:1;height:24px;border:none;background:none;cursor:pointer;border-radius:3px}
-.cchk{display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:11px;color:var(--dm);cursor:pointer}
-.cchk input{accent-color:var(--ac)}
-.radio-row{display:flex;gap:10px;flex:1}
-.radio-row label{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--dm);cursor:pointer}
 
 /* ── Footer ── */
 #sb-foot{padding:8px 10px;border-top:1px solid var(--bd);display:flex;gap:5px;flex-shrink:0}
@@ -98,7 +93,6 @@ canvas{display:block;background:#f4f0e8}
       <div class="panel-grid">
         <div class="pi"><label>Width (cm)</label><input id="s-pw" type="number" value="120" min="10" max="600"></div>
         <div class="pi"><label>Height (cm)</label><input id="s-ph" type="number" value="180" min="10" max="600"></div>
-        <div class="pi full"><label>Vertical grid divisions (even)</label><input id="s-gd" type="number" value="6" min="2" max="24" step="2"></div>
       </div>
     </div>
 
@@ -108,8 +102,8 @@ canvas{display:block;background:#f4f0e8}
         <button id="add-btn">+ Add Layer</button>
         <div id="gen-picker" class="hidden">
           <div data-gen="straight"><span class="gi">│</span>Straight</div>
+          <div data-gen="sine"><span class="gi">∿</span>Sine Wave</div>
           <div data-gen="arch"><span class="gi">⌒</span>Arch</div>
-          <div data-gen="sine"><span class="gi">∿</span>Sine</div>
           <div data-gen="square"><span class="gi">⊓</span>Square Wave</div>
         </div>
       </div>
@@ -128,7 +122,7 @@ canvas{display:block;background:#f4f0e8}
   <main id="canvas-wrap">
     <div id="canvas-toolbar">
       <label>Zoom <input type="range" id="zoom-sl" min="20" max="200" value="60" step="5"> <span id="zoom-label">60%</span></label>
-      <label style="margin-left:auto"><input type="checkbox" id="show-grid" checked> Grid</label>
+      <label style="margin-left:auto"><input type="checkbox" id="show-grid" checked> Border</label>
     </div>
     <div id="canvas-scroll">
       <div id="canvas-inner"><canvas id="cv"></canvas></div>
@@ -139,207 +133,164 @@ canvas{display:block;background:#f4f0e8}
 <script>
 'use strict';
 
-// ================================================================
-// CONSTANTS & STATE
-// ================================================================
-const PX = 5;          // pixels per cm
-const BK = 0.5522848;  // bezier quarter-circle factor
+// ── Constants & state ────────────────────────────────────────────
+const PX = 5; // pixels per cm
 
 let _uid = 1;
-const App = { panelW: 120, panelH: 180, gridDiv: 6, showGrid: true, zoom: 60 };
+const App = { panelW: 120, panelH: 180, showGrid: true, zoom: 60 };
 let layers = [];
-let paperLs = {};  // id → paper.Layer
+let paperLs = {}; // id → paper.Layer
 
-const REP_OPTS = [2, 4, 6, 8, 10, 12];
+// Segment counts are powers of 2: grid lines of any two layers always coincide.
+const SEG_OPTS = [2, 4, 8, 16, 32];
 
 const GEN_META = {
   straight: { label: 'Straight',    icon: '│' },
+  sine:     { label: 'Sine Wave',   icon: '∿' },
   arch:     { label: 'Arch',        icon: '⌒' },
-  sine:     { label: 'Sine',        icon: '∿' },
   square:   { label: 'Square Wave', icon: '⊓' },
 };
 
+// Generator-specific defaults. segments & columns live on the layer.
 const GEN_DEF = {
   straight: {},
-  arch:     { amplitude: 8, repetitions: 2, archFraction: 0.8, sharpness: 1.0 },
-  sine:     { amplitude: 6, repetitions: 4, phaseHalf: false },
-  square:   { amplitude: 6, repetitions: 4, cornerRadius: 0 },
+  sine:     { amplitude: 6 },
+  arch:     { amplitude: 8, sharpness: 0.6 },
+  square:   { amplitude: 6, roundness: 0.15 },
 };
 
-// ================================================================
-// GENERATORS  –  each returns a paper.Path starting at (0,0),
-//               ending at (0, panelH_px), inserted into active layer.
-// ================================================================
+// ── Generators ───────────────────────────────────────────────────
+// Each returns an L-type Paper.js Path (bumps in +x direction)
+// running from Point(0,0) to Point(0,H).
+// LRLR column mirroring is handled by drawColumns().
 
-function genStraight(p, H) {
-  const path = new paper.Path();
-  path.moveTo([0, 0]);
-  path.lineTo([0, H]);
+function genStraight(_p, _segs, H) {
+  return new paper.Path({
+    segments: [new paper.Point(0, 0), new paper.Point(0, H)],
+  });
+}
+
+// One raised-cosine bump per segment.
+// Raised cosine gives zero x-velocity at each grid-line endpoint,
+// so adjacent segments within a column join without a kink.
+function genSine(p, segs, H) {
+  const amp   = p.amplitude * PX;
+  const cellH = H / segs;
+  const N     = 60;
+  const pts   = [];
+  for (let c = 0; c < segs; c++) {
+    for (let s = 0; s <= N; s++) {
+      const t = s / N;
+      pts.push(new paper.Point(
+        amp * 0.5 * (1 - Math.cos(Math.PI * t)),
+        c * cellH + t * cellH
+      ));
+    }
+  }
+  return new paper.Path(pts);
+}
+
+// One cubic-bezier arc per segment.
+// sharpness 0 = round arch, 1 = flat-top / gothic.
+// The handle offset h controls the tangent at the spine endpoints:
+//   h = 0              → horizontal departure → flat top → pointed arch in the negative space
+//   h = cellH * 0.42   → diagonal departure  → rounder arch shape
+function genArch(p, segs, H) {
+  const amp   = p.amplitude * PX;
+  const cellH = H / segs;
+  const h     = cellH * (1 - p.sharpness) * 0.42;
+  const path  = new paper.Path();
+  path.moveTo(new paper.Point(0, 0));
+  for (let c = 0; c < segs; c++) {
+    const y0 = c * cellH;
+    const y1 = y0 + cellH;
+    path.cubicCurveTo(
+      new paper.Point(amp, y0 + h),
+      new paper.Point(amp, y1 - h),
+      new paper.Point(0,   y1)
+    );
+  }
   return path;
 }
 
-function genArch(p, H) {
-  const { amplitude, repetitions, archFraction, sharpness } = p;
-  const amp = amplitude * PX;
-  const cellH = H / repetitions;
-  const margin = (1 - Math.max(0, Math.min(1, archFraction))) / 2;
-  const STEPS = 72;
-  const path = new paper.Path();
-
-  for (let c = 0; c < repetitions; c++) {
-    for (let s = 0; s <= STEPS; s++) {
-      const t = s / STEPS;
-      const y = (c + t) * cellH;
-      let x = 0;
-      if (t > margin && t < 1 - margin) {
-        const archT = (t - margin) / (1 - 2 * margin);
-        x = amp * Math.pow(Math.sin(Math.PI * archT), sharpness);
-      }
-      if (c === 0 && s === 0) path.moveTo([x, y]);
-      else path.lineTo([x, y]);
-    }
-  }
-  path.smooth({ type: 'catmull-rom', factor: 0.35 });
-  return path;
+// Flat-top bump per segment: raised-cosine edges, flat plateau.
+// roundness = fraction of segment height used for the edge transition.
+//   0.01 → near-instant step (square), 0.49 → full sine (no plateau).
+function squareBump(t, r) {
+  if (t < r)     return 0.5 * (1 - Math.cos(Math.PI * t / r));
+  if (t > 1 - r) return 0.5 * (1 - Math.cos(Math.PI * (1 - t) / r));
+  return 1;
 }
 
-function genSine(p, H) {
-  const { amplitude, repetitions, phaseHalf } = p;
-  const amp = amplitude * PX;
-  const cellH = H / repetitions;
-  const phase = phaseHalf ? 0.5 : 0;
-  const STEPS = 72;
-  const path = new paper.Path();
-
-  for (let c = 0; c < repetitions; c++) {
-    for (let s = 0; s <= STEPS; s++) {
-      const t = s / STEPS;
-      const y = (c + t) * cellH;
-      const x = amp * Math.sin(2 * Math.PI * (t + phase));
-      if (c === 0 && s === 0) path.moveTo([x, y]);
-      else path.lineTo([x, y]);
+function genSquare(p, segs, H) {
+  const amp   = p.amplitude * PX;
+  const cellH = H / segs;
+  const r     = Math.max(0.01, Math.min(0.49, p.roundness));
+  const N     = 60;
+  const pts   = [];
+  for (let c = 0; c < segs; c++) {
+    for (let s = 0; s <= N; s++) {
+      const t = s / N;
+      pts.push(new paper.Point(
+        amp * squareBump(t, r),
+        c * cellH + t * cellH
+      ));
     }
   }
-  path.smooth({ type: 'catmull-rom', factor: 0.35 });
-  return path;
+  return new paper.Path(pts);
 }
 
-function genSquare(p, H) {
-  const { amplitude, repetitions, cornerRadius } = p;
-  const amp = amplitude * PX;
-  const cellH = H / repetitions;
-  const halfH = cellH / 2;
-  const maxR = Math.min(amp, halfH) * 0.48;
-  const r = cornerRadius * maxR;
-  const path = new paper.Path();
+const GEN_FNS = { straight: genStraight, sine: genSine, arch: genArch, square: genSquare };
 
-  if (r < 0.5) {
-    // Sharp corners
-    path.moveTo([0, 0]);
-    for (let c = 0; c < repetitions; c++) {
-      const y0 = c * cellH, yM = y0 + halfH;
-      path.lineTo([amp, y0]);
-      path.lineTo([amp, yM]);
-      path.lineTo([0, yM]);
-    }
-    path.lineTo([0, H]);
-    return path;
-  }
-
-  // Rounded corners via explicit bezier handles
-  const seg = (px, py, hix, hiy, hox, hoy) =>
-    path.add(new paper.Segment(
-      new paper.Point(px, py),
-      hix != null ? new paper.Point(hix, hiy) : null,
-      hox != null ? new paper.Point(hox, hoy) : null
-    ));
-
-  seg(0, 0, null, null, null, null);  // start
-
-  for (let c = 0; c < repetitions; c++) {
-    const y0 = c * cellH, yM = y0 + halfH, y1 = (c + 1) * cellH;
-
-    // Corner B – top-right: turn right → down
-    seg(amp - r, y0,    null, null,   r*BK, 0   );
-    seg(amp,     y0 + r, 0, -r*BK,   null, null );
-
-    // Corner C – mid-right: turn down → left
-    seg(amp,     yM - r, null, null,  0, r*BK  );
-    seg(amp - r, yM,     r*BK, 0,    null, null );
-
-    // Corner D – mid-left: turn left → down
-    seg(r,  yM,          null, null, -r*BK, 0   );
-    seg(0,  yM + r,      0, -r*BK,   null, null );
-
-    if (c < repetitions - 1) {
-      // Corner A – next-cell top-left: turn down → right
-      seg(0, y1 - r,     null, null,  0, r*BK  );
-      seg(r, y1,        -r*BK, 0,    null, null );
-    }
-  }
-  seg(0, H, null, null, null, null);  // end
-  return path;
-}
-
-const GEN_FNS = { straight: genStraight, arch: genArch, sine: genSine, square: genSquare };
-
-// ================================================================
-// RENDERING
-// ================================================================
-
-function getPx() { return { W: App.panelW * PX, H: App.panelH * PX }; }
-
-function styleAndRepeat(layer, basePath) {
+// ── Column placement — LRLR ──────────────────────────────────────
+// Stamps the L-type basePath across the panel width.
+// Odd columns are mirrored around their spine x-position → R type.
+// Result: L R L R L … pattern, arches appear in the negative space.
+function drawColumns(layer, basePath) {
   const { W, H } = getPx();
-  const { count, mirror } = layer.repeat;
-  const spacing = count > 1 ? W / (count - 1) : 0;
+  const n       = layer.columns;
+  const spacing = n > 1 ? W / (n - 1) : 0;
 
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < n; i++) {
     const path = i === 0 ? basePath : basePath.clone();
-    const x = i * spacing;
-    if (i > 0) path.translate([x, 0]);
-    if (mirror && i % 2 === 1) path.scale(-1, 1, new paper.Point(x, H / 2));
+    const x    = i * spacing;
+    if (i > 0) path.translate(new paper.Point(x, 0));
+    if (i % 2 === 1) path.scale(-1, 1, new paper.Point(x, H / 2));
     path.strokeColor = new paper.Color(layer.style.color);
     path.strokeWidth = layer.style.strokeWidth * PX;
-    path.fillColor = null;
-    path.strokeCap = 'round';
-    path.strokeJoin = 'round';
+    path.fillColor   = null;
+    path.strokeCap   = 'round';
+    path.strokeJoin  = 'round';
   }
 }
+
+// ── Rendering ────────────────────────────────────────────────────
+function getPx() { return { W: App.panelW * PX, H: App.panelH * PX }; }
 
 function drawIntoLayer(layer, pl) {
   pl.activate();
   if (!layer.visible) return;
   const fn = GEN_FNS[layer.gen];
-  if (!fn || !layer.repeat.count) return;
-  const basePath = fn(layer.params, getPx().H);
-  styleAndRepeat(layer, basePath);
+  if (!fn) return;
+  const basePath = fn(layer.params, layer.segments, getPx().H);
+  drawColumns(layer, basePath);
 }
 
-function drawGrid() {
-  // caller must have activated a fresh layer
+function drawBorder() {
   const { W, H } = getPx();
-  const border = new paper.Path.Rectangle([0, 0], [W, H]);
-  border.strokeColor = new paper.Color(0, 0, 0, 0.25);
-  border.strokeWidth = 1;
-  border.fillColor = null;
-  const dh = H / App.gridDiv;
-  for (let i = 1; i < App.gridDiv; i++) {
-    const y = i * dh;
-    const line = new paper.Path([new paper.Point(0, y), new paper.Point(W, y)]);
-    line.strokeColor = new paper.Color(0, 0, 0, 0.12);
-    line.strokeWidth = 0.5;
-    line.dashArray = [6, 4];
-  }
+  const b = new paper.Path.Rectangle(new paper.Rectangle(0, 0, W, H));
+  b.strokeColor = new paper.Color(0, 0, 0, 0.3);
+  b.strokeWidth = 1.5;
+  b.fillColor   = null;
 }
 
 function fullRedraw() {
   paper.project.clear();
   paperLs = {};
-  if (App.showGrid) { const gl = new paper.Layer(); drawGrid(); }
+  if (App.showGrid) { new paper.Layer(); drawBorder(); }
   layers.forEach(layer => {
     const pl = new paper.Layer();
-    pl.visible = layer.visible;
+    pl.visible    = layer.visible;
     paperLs[layer.id] = pl;
     drawIntoLayer(layer, pl);
   });
@@ -348,11 +299,11 @@ function fullRedraw() {
 
 const _timers = {};
 function schedRedraw(id) {
-  if (_timers[id]) clearTimeout(_timers[id]);
+  clearTimeout(_timers[id]);
   _timers[id] = setTimeout(() => {
     delete _timers[id];
     const layer = layers.find(l => l.id === id);
-    const pl = paperLs[id];
+    const pl    = paperLs[id];
     if (!layer || !pl) { fullRedraw(); return; }
     pl.removeChildren();
     pl.visible = layer.visible;
@@ -361,36 +312,36 @@ function schedRedraw(id) {
   }, 20);
 }
 
-function initCanvas() { paper.setup(document.getElementById('cv')); paper.view.autoUpdate = false; }
-
+function initCanvas() {
+  paper.setup(document.getElementById('cv'));
+  paper.view.autoUpdate = false;
+}
 function resizeCanvas() {
   const { W, H } = getPx();
   const cv = paper.view.element;
-  cv.width = W; cv.height = H;
+  cv.width  = W; cv.height = H;
   paper.view.viewSize = new paper.Size(W, H);
 }
-
 function applyZoom(z) {
   const inner = document.getElementById('canvas-inner');
   const { W, H } = getPx();
-  inner.style.width  = W + 'px';
-  inner.style.height = H + 'px';
-  inner.style.transform = `scale(${z / 100})`;
+  inner.style.width           = W + 'px';
+  inner.style.height          = H + 'px';
+  inner.style.transform       = `scale(${z / 100})`;
+  inner.style.transformOrigin = 'top left';
 }
 
-// ================================================================
-// LAYER MANAGEMENT
-// ================================================================
-
+// ── Layer management ─────────────────────────────────────────────
 function addLayer(gen) {
   const layer = {
-    id: _uid++,
+    id:       _uid++,
     gen,
-    name: `${GEN_META[gen].label} ${layers.length + 1}`,
-    visible: true,
-    params:  Object.assign({}, GEN_DEF[gen]),
-    repeat:  { count: 5, mirror: true },
-    style:   { color: '#5c3d1e', strokeWidth: 0.3 },
+    name:     `${GEN_META[gen].label} ${layers.length + 1}`,
+    visible:  true,
+    segments: 4,
+    columns:  5,
+    params:   Object.assign({}, GEN_DEF[gen]),
+    style:    { color: '#5c3d1e', strokeWidth: 0.3 },
   };
   layers.push(layer);
   renderLayers();
@@ -414,70 +365,60 @@ function toggleVis(id) {
 }
 
 function setParam(layer, k, v) {
-  if      (k.startsWith('r_')) layer.repeat[k.slice(2)] = v;
-  else if (k.startsWith('s_')) layer.style[k.slice(2)]  = v;
-  else                         layer.params[k]           = v;
+  if (k === 'segments' || k === 'columns') layer[k] = v;
+  else if (k.startsWith('s_')) layer.style[k.slice(2)] = v;
+  else layer.params[k] = v;
 }
 
-// ================================================================
-// UI BUILDERS
-// ================================================================
-
+// ── UI builders ──────────────────────────────────────────────────
 function srow(lbl, k, min, max, step, val) {
   return `<div class="crow">
     <span class="clbl">${lbl}</span>
-    <input class="cslider" type="range" data-k="${k}" min="${min}" max="${max}" step="${step}" value="${val}">
-    <input class="cnum" type="number" data-kn="${k}" min="${min}" max="${max}" step="${step}" value="${val}">
+    <input class="cslider" type="range"  data-k="${k}"  min="${min}" max="${max}" step="${step}" value="${val}">
+    <input class="cnum"    type="number" data-kn="${k}" min="${min}" max="${max}" step="${step}" value="${val}">
   </div>`;
 }
 function selrow(lbl, k, opts, val) {
-  const os = opts.map(v => `<option value="${v}"${+v===+val?' selected':''}>${v}</option>`).join('');
+  const os = opts.map(v => `<option value="${v}"${+v === +val ? ' selected' : ''}>${v}</option>`).join('');
   return `<div class="crow"><span class="clbl">${lbl}</span><select class="csel" data-k="${k}">${os}</select></div>`;
 }
 function crow(lbl, k, val) {
   return `<div class="crow"><span class="clbl">${lbl}</span><input type="color" class="ccol" data-k="${k}" value="${val}"></div>`;
 }
-function chkrow(lbl, k, checked) {
-  return `<label class="cchk"><input type="checkbox" data-k="${k}"${checked?' checked':''}>${lbl}</label>`;
-}
 
 function buildGenCtrls(layer) {
   const p = layer.params;
-  if (layer.gen === 'arch') return `
-    ${srow('Amplitude (cm)', 'amplitude',    0, 30,  0.5, p.amplitude)}
-    ${selrow('Repetitions',  'repetitions',  REP_OPTS, p.repetitions)}
-    ${srow('Arch fraction',  'archFraction', 0,  1,  0.01, p.archFraction)}
-    ${srow('Pointedness',    'sharpness',    0.2,4,  0.05, p.sharpness)}`;
-  if (layer.gen === 'sine') return `
-    ${srow('Amplitude (cm)', 'amplitude',   0, 20, 0.5, p.amplitude)}
-    ${selrow('Repetitions',  'repetitions', REP_OPTS, p.repetitions)}
-    ${chkrow('Phase shift ½ cycle', 'phaseHalf', p.phaseHalf)}`;
-  if (layer.gen === 'square') return `
-    ${srow('Amplitude (cm)', 'amplitude',    0, 20, 0.5, p.amplitude)}
-    ${selrow('Repetitions',  'repetitions',  REP_OPTS, p.repetitions)}
-    ${srow('Corner radius',  'cornerRadius', 0,  1, 0.01, p.cornerRadius)}`;
-  return ''; // straight has no gen params
+  if (layer.gen === 'straight') return '';
+  if (layer.gen === 'sine')
+    return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude);
+  if (layer.gen === 'arch')
+    return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
+         + srow('Sharpness',      'sharpness', 0, 1, 0.01, p.sharpness);
+  if (layer.gen === 'square')
+    return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
+         + srow('Roundness',      'roundness', 0.01, 0.49, 0.01, p.roundness);
+  return '';
 }
 
 function buildCard(layer) {
-  const m = GEN_META[layer.gen];
-  const r = layer.repeat, s = layer.style;
+  const m  = GEN_META[layer.gen];
+  const s  = layer.style;
   const gc = buildGenCtrls(layer);
   return `
     <div class="lhead">
-      <div class="vis ${layer.visible?'on':'off'}" data-vis>●</div>
+      <div class="vis ${layer.visible ? 'on' : 'off'}" data-vis>●</div>
       <span class="badge">${m.icon} ${m.label}</span>
       <span class="lname">${layer.name}</span>
       <span class="chev">›</span>
       <button class="delbtn" data-del>✕</button>
     </div>
     <div class="lbody">
-      ${gc ? `<div class="csec"><div class="ctitle">Generator</div>${gc}</div>` : ''}
       <div class="csec">
-        <div class="ctitle">Array / Repeat</div>
-        ${srow('Column count', 'r_count',  1, 20, 1, r.count)}
-        ${chkrow('Mirror alternate columns (L R L R)', 'r_mirror', r.mirror)}
+        <div class="ctitle">Grid</div>
+        ${selrow('Segments', 'segments', SEG_OPTS, layer.segments)}
+        ${srow('Columns', 'columns', 1, 20, 1, layer.columns)}
       </div>
+      ${gc ? `<div class="csec"><div class="ctitle">Generator</div>${gc}</div>` : ''}
       <div class="csec">
         <div class="ctitle">Style</div>
         ${crow('Color', 's_color', s.color)}
@@ -493,53 +434,49 @@ function wireCard(card, layer) {
     card.classList.toggle('open');
   });
 
-  // slider ↔ number sync
   card.querySelectorAll('.cslider').forEach(sl => {
-    const k = sl.dataset.k;
+    const k   = sl.dataset.k;
     const num = card.querySelector(`[data-kn="${k}"]`);
     const upd = v => { setParam(layer, k, parseFloat(v)); schedRedraw(layer.id); };
-    sl.addEventListener('input',   e => { if (num) num.value = e.target.value; upd(e.target.value); });
+    sl.addEventListener('input',  e => { if (num) num.value = e.target.value; upd(e.target.value); });
     if (num) num.addEventListener('change', e => { sl.value = e.target.value; upd(e.target.value); });
   });
 
   card.querySelectorAll('.csel').forEach(sel =>
-    sel.addEventListener('change', e => { setParam(layer, sel.dataset.k, +e.target.value); schedRedraw(layer.id); }));
+    sel.addEventListener('change', e => {
+      setParam(layer, sel.dataset.k, +e.target.value);
+      schedRedraw(layer.id);
+    }));
 
   card.querySelectorAll('.ccol').forEach(el =>
-    el.addEventListener('input',  e => { setParam(layer, el.dataset.k, e.target.value); schedRedraw(layer.id); }));
-
-  card.querySelectorAll('input[type=checkbox]').forEach(el =>
-    el.addEventListener('change', e => { setParam(layer, el.dataset.k, e.target.checked); schedRedraw(layer.id); }));
+    el.addEventListener('input', e => {
+      setParam(layer, el.dataset.k, e.target.value);
+      schedRedraw(layer.id);
+    }));
 }
 
 function renderLayers() {
   const list = document.getElementById('layers-list');
-  // remember open cards
   const open = new Set([...list.querySelectorAll('.lcard.open')].map(el => +el.dataset.id));
   list.innerHTML = '';
-
   if (!layers.length) {
     list.innerHTML = '<div class="empty-msg">No layers yet.<br>Click <strong>+ Add Layer</strong> to begin.</div>';
     return;
   }
-
   [...layers].reverse().forEach(layer => {
-    const card = document.createElement('div');
-    card.className = 'lcard' + (open.has(layer.id) ? ' open' : '');
-    card.dataset.id = layer.id;
-    card.innerHTML = buildCard(layer);
+    const card       = document.createElement('div');
+    card.className   = 'lcard' + (open.has(layer.id) ? ' open' : '');
+    card.dataset.id  = layer.id;
+    card.innerHTML   = buildCard(layer);
     wireCard(card, layer);
     list.appendChild(card);
   });
 }
 
-// ================================================================
-// EXPORT / SAVE / LOAD
-// ================================================================
-
+// ── Export / Save / Load ─────────────────────────────────────────
 function dl(name, text, mime) {
   const a = Object.assign(document.createElement('a'), {
-    href: URL.createObjectURL(new Blob([text], { type: mime })),
+    href:     URL.createObjectURL(new Blob([text], { type: mime })),
     download: name,
   });
   a.click(); URL.revokeObjectURL(a.href);
@@ -548,50 +485,45 @@ function dl(name, text, mime) {
 function exportSVG() {
   const { W, H } = getPx();
   let svg = paper.project.exportSVG({ asString: true, bounds: 'view' });
-  svg = svg.replace(/<svg([^>]*)>/, `<svg$1 width="${App.panelW}cm" height="${App.panelH}cm" viewBox="0 0 ${W} ${H}"><rect width="${W}" height="${H}" fill="#f4f0e8"/>`);
+  svg = svg.replace(/<svg([^>]*)>/,
+    `<svg$1 width="${App.panelW}cm" height="${App.panelH}cm" viewBox="0 0 ${W} ${H}"><rect width="${W}" height="${H}" fill="#f4f0e8"/>`);
   dl('partition-screen.svg', svg, 'image/svg+xml');
 }
 
 function saveJSON() {
-  dl('partition-screen.json', JSON.stringify({ panelW: App.panelW, panelH: App.panelH, gridDiv: App.gridDiv, layers }, null, 2), 'application/json');
+  dl('partition-screen.json',
+    JSON.stringify({ panelW: App.panelW, panelH: App.panelH, layers }, null, 2),
+    'application/json');
 }
 
 function loadJSON(file) {
   const r = new FileReader();
   r.onload = ev => {
     try {
-      const d = JSON.parse(ev.target.result);
+      const d    = JSON.parse(ev.target.result);
       App.panelW = d.panelW || 120;
       App.panelH = d.panelH || 180;
-      App.gridDiv = d.gridDiv || 6;
-      layers = d.layers || [];
-      _uid = layers.reduce((m, l) => Math.max(m, l.id), 0) + 1;
+      layers     = d.layers || [];
+      _uid       = layers.reduce((m, l) => Math.max(m, l.id), 0) + 1;
       document.getElementById('s-pw').value = App.panelW;
       document.getElementById('s-ph').value = App.panelH;
-      document.getElementById('s-gd').value = App.gridDiv;
       resizeCanvas(); applyZoom(App.zoom); renderLayers(); fullRedraw();
     } catch (err) { alert('Load error: ' + err.message); }
   };
   r.readAsText(file);
 }
 
-// ================================================================
-// INIT
-// ================================================================
-
+// ── Init ─────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   initCanvas(); resizeCanvas(); applyZoom(App.zoom); renderLayers(); fullRedraw();
 
-  // Panel settings
   const onPanel = () => {
     App.panelW = Math.max(10, +document.getElementById('s-pw').value || 120);
     App.panelH = Math.max(10, +document.getElementById('s-ph').value || 180);
-    App.gridDiv = Math.max(2, +document.getElementById('s-gd').value || 6);
     resizeCanvas(); applyZoom(App.zoom); fullRedraw();
   };
-  ['s-pw','s-ph','s-gd'].forEach(id => document.getElementById(id).addEventListener('change', onPanel));
+  ['s-pw', 's-ph'].forEach(id => document.getElementById(id).addEventListener('change', onPanel));
 
-  // Generator picker
   const picker = document.getElementById('gen-picker');
   document.getElementById('add-btn').addEventListener('click', e => {
     e.stopPropagation(); picker.classList.toggle('hidden');
@@ -601,8 +533,7 @@ window.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('click', () => picker.classList.add('hidden'));
   picker.addEventListener('click', e => e.stopPropagation());
 
-  // Zoom
-  const zoomSl = document.getElementById('zoom-sl');
+  const zoomSl  = document.getElementById('zoom-sl');
   const zoomLbl = document.getElementById('zoom-label');
   zoomSl.addEventListener('input', e => {
     App.zoom = +e.target.value;
@@ -610,19 +541,16 @@ window.addEventListener('DOMContentLoaded', () => {
     applyZoom(App.zoom);
   });
 
-  // Grid
   document.getElementById('show-grid').addEventListener('change', e => {
     App.showGrid = e.target.checked; fullRedraw();
   });
 
-  // Export / Save / Load
   document.getElementById('btn-export').addEventListener('click', exportSVG);
   document.getElementById('btn-save').addEventListener('click', saveJSON);
   document.getElementById('file-load').addEventListener('change', e => {
     const f = e.target.files[0]; if (f) loadJSON(f); e.target.value = '';
   });
 
-  // Keyboard shortcuts
   document.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveJSON(); }
     if ((e.ctrlKey || e.metaKey) && e.key === 'e') { e.preventDefault(); exportSVG(); }
