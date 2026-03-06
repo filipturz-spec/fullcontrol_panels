@@ -158,7 +158,7 @@ const GEN_DEF = {
   straight: {},
   sine:     { amplitude: 6, repeats: 3 },
   arch:     { amplitude: 8, sharpness: 0.6, repeats: 3 },
-  square:   { amplitude: 6, roundness: 0.15, repeats: 3 },
+  square:   { amplitude: 6, cornerRadius: 0, repeats: 3 },
 };
 
 // ── Generators ───────────────────────────────────────────────────
@@ -206,28 +206,66 @@ function genArch(p, _segWidth, H) {
   return path;
 }
 
-// `repeats` flat-top bumps, alternating left-right, top→bottom.
-// roundness = fraction of cell height used for the edge transition.
-function squareBump(t, r) {
-  if (t < r)     return 0.5 * (1 - Math.cos(Math.PI * t / r));
-  if (t > 1 - r) return 0.5 * (1 - Math.cos(Math.PI * (1 - t) / r));
-  return 1;
-}
-
+// True square wave: alternates between x=+amp and x=-amp every half-period.
+// cornerRadius (cm) rounds each 90-degree joint with a bezier arc.
 function genSquare(p, _segWidth, H) {
   const amp   = p.amplitude * PX;
-  const cellH = H / p.repeats;
-  const r     = Math.max(0.01, Math.min(0.49, p.roundness));
-  const N     = Math.max(60, p.repeats * 40);
-  const pts   = [];
+  const halfH = H / (p.repeats * 2);                        // height of one half-period
+  const r     = Math.min((p.cornerRadius || 0) * PX,        // clamped corner radius
+                         halfH * 0.45, amp * 0.9);
+  const K     = 0.5523;                                      // bezier quarter-circle approx
+
+  const path = new paper.Path();
+  path.moveTo(new paper.Point(amp, 0));
+
   for (let c = 0; c < p.repeats; c++) {
-    const dir = c % 2 === 0 ? 1 : -1;
-    for (let s = 0; s <= N / p.repeats; s++) {
-      const t = s / (N / p.repeats);
-      pts.push(new paper.Point(amp * dir * squareBump(t, r), c * cellH + t * cellH));
+    const y0 = c * halfH * 2;
+    const yM = y0 + halfH;
+    const y1 = y0 + halfH * 2;
+    const last = c === p.repeats - 1;
+
+    if (r <= 0) {
+      // Sharp corners
+      path.lineTo(new paper.Point( amp, yM));
+      path.lineTo(new paper.Point(-amp, yM));
+      path.lineTo(new paper.Point(-amp, y1));
+      if (!last) path.lineTo(new paper.Point(amp, y1));
+    } else {
+      // Corner 1: (amp, yM) — going DOWN, turning LEFT
+      path.lineTo(new paper.Point(amp, yM - r));
+      path.cubicCurveTo(
+        new paper.Point(amp,         yM - r + K * r),
+        new paper.Point(amp - K * r, yM),
+        new paper.Point(amp - r,     yM)
+      );
+      // Corner 2: (-amp, yM) — going LEFT, turning DOWN
+      path.lineTo(new paper.Point(-amp + r, yM));
+      path.cubicCurveTo(
+        new paper.Point(-amp + r - K * r, yM),
+        new paper.Point(-amp,             yM + K * r),
+        new paper.Point(-amp,             yM + r)
+      );
+      if (!last) {
+        // Corner 3: (-amp, y1) — going DOWN, turning RIGHT
+        path.lineTo(new paper.Point(-amp, y1 - r));
+        path.cubicCurveTo(
+          new paper.Point(-amp,         y1 - r + K * r),
+          new paper.Point(-amp + K * r, y1),
+          new paper.Point(-amp + r,     y1)
+        );
+        // Corner 4: (amp, y1) — going RIGHT, turning DOWN
+        path.lineTo(new paper.Point(amp - r, y1));
+        path.cubicCurveTo(
+          new paper.Point(amp - r + K * r, y1),
+          new paper.Point(amp,             y1 + K * r),
+          new paper.Point(amp,             y1 + r)
+        );
+      } else {
+        path.lineTo(new paper.Point(-amp, y1));
+      }
     }
   }
-  return new paper.Path(pts);
+  return path;
 }
 
 const GEN_FNS = { straight: genStraight, sine: genSine, arch: genArch, square: genSquare };
@@ -410,8 +448,8 @@ function buildGenCtrls(layer) {
          + srow('Sharpness',      'sharpness', 0, 1, 0.01, p.sharpness)
          + repeats;
   if (layer.gen === 'square')
-    return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
-         + srow('Roundness',      'roundness', 0.01, 0.49, 0.01, p.roundness)
+    return srow('Amplitude (cm)',      'amplitude',    0, 30, 0.5,  p.amplitude)
+         + srow('Corner radius (cm)',  'cornerRadius', 0, 15, 0.25, p.cornerRadius)
          + repeats;
   return '';
 }
