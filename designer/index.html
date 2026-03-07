@@ -449,6 +449,7 @@ function drawIntoLayer(layer, pl) {
   const segW     = W / layer.segments;
   const sw       = layer.style.strokeWidth * PX;
   const spine    = fn(layer.params, segW, H, sw);
+  if (layer.flipV) spine.transform(new paper.Matrix(1, 0, 0, -1, 0, H));
   drawSegments(layer, spine);
 }
 
@@ -717,6 +718,7 @@ function addLayer(gen) {
     visible:  true,
     segments:  4,      // number of vertical strips across the panel
     direction: 'LLLL', // 'LLLL' | 'LRLR' | 'RRRR'
+    flipV:     false,
     params:   Object.assign({}, GEN_DEF[gen]),
     style:    { color: '#aaaaaa', strokeWidth: 0.3 },
   };
@@ -753,7 +755,7 @@ function toggleVis(id) {
 }
 
 function setParam(layer, k, v) {
-  if (k === 'segments' || k === 'direction') layer[k] = v;
+  if (k === 'segments' || k === 'direction' || k === 'flipV') layer[k] = v;
   else if (k.startsWith('s_')) layer.style[k.slice(2)] = v;
   else layer.params[k] = v;
 }
@@ -819,6 +821,7 @@ function buildCard(layer) {
         <div class="ctitle">Grid</div>
         ${selrow('Segments',  'segments',  SEG_OPTS,                  layer.segments)}
         ${selrow('Direction', 'direction', ['LLLL','LRLR','RRRR'],    layer.direction)}
+        ${chkrow('Flip vertical', 'flipV', layer.flipV)}
       </div>
       ${gc ? `<div class="csec"><div class="ctitle">Generator</div>${gc}</div>` : ''}
       <div class="csec">
