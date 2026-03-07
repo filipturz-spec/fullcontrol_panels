@@ -450,6 +450,7 @@ function fullRedraw() {
     drawIntoLayer(layer, pl);
   });
   paper.view.update();
+  refresh3DLines();
 }
 
 const _timers = {};
@@ -464,6 +465,7 @@ function schedRedraw(id) {
     pl.visible = layer.visible;
     drawIntoLayer(layer, pl);
     paper.view.update();
+    refresh3DLines();
   }, 20);
 }
 
@@ -505,17 +507,9 @@ function init3D() {
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x1a1a1e);
-  scene.fog = new THREE.FogExp2(0x1a1a1e, 0.0012);
+  scene.fog = new THREE.FogExp2(0x1a1a1e, 0.0010);
 
   const camera = new THREE.PerspectiveCamera(40, w / h, 0.1, 5000);
-
-  scene.add(new THREE.AmbientLight(0xffffff, 0.75));
-  const sun = new THREE.DirectionalLight(0xffffff, 0.65);
-  sun.position.set(150, 300, 400);
-  scene.add(sun);
-  const fill = new THREE.DirectionalLight(0xffffff, 0.2);
-  fill.position.set(-200, -100, 200);
-  scene.add(fill);
 
   const controls = new THREE.OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
@@ -523,18 +517,16 @@ function init3D() {
   controls.minDistance   = 5;
   controls.maxDistance   = 3000;
 
-  const texture = new THREE.CanvasTexture(paper.view.element);
-
   const grid = new THREE.GridHelper(2000, 40, 0x3a3a48, 0x252530);
   scene.add(grid);
 
-  three = { renderer, scene, camera, controls, texture, panelMesh: null, grid };
+  three = { renderer, scene, camera, controls,
+            panelEdges: null, linesGroup: null, grid, panelDepth: 3 };
   rebuild3DPanel();
 
   function animate() {
     requestAnimationFrame(animate);
     controls.update();
-    three.texture.needsUpdate = true;
     renderer.render(scene, camera);
   }
   animate();
@@ -544,46 +536,103 @@ function init3D() {
 
 function rebuild3DPanel() {
   if (!three) return;
-  const { scene, texture } = three;
+  const { scene } = three;
 
-  // Remove old mesh
-  if (three.panelMesh) {
-    scene.remove(three.panelMesh);
-    three.panelMesh.geometry.dispose();
-    three.panelMesh.material.forEach(m => m.dispose());
-    three.panelMesh = null;
+  // Remove old panel edges
+  if (three.panelEdges) {
+    scene.remove(three.panelEdges);
+    three.panelEdges.geometry.dispose();
+    three.panelEdges.material.dispose();
+    three.panelEdges = null;
   }
 
   const pW = App.panelW;
   const pH = App.panelH;
-  const pD = Math.max(2, pW * 0.022); // realistic panel depth
+  const pD = Math.max(2, pW * 0.022);
+  three.panelDepth = pD;
 
-  const geo  = new THREE.BoxGeometry(pW, pH, pD);
-  const wood = new THREE.MeshStandardMaterial({ color: 0x8a5f28, roughness: 0.8, metalness: 0.05 });
-  const back = new THREE.MeshStandardMaterial({ color: 0xd8cbb0, roughness: 0.9 });
-  const front = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.7 });
-  // BoxGeometry face order: +x, -x, +y, -y, +z(front), -z(back)
-  three.panelMesh = new THREE.Mesh(geo, [wood, wood, wood, wood, front, back]);
-  scene.add(three.panelMesh);
+  // Subtle panel frame — edges only, no filled surface
+  const boxGeo  = new THREE.BoxGeometry(pW, pH, pD);
+  const edgesGeo = new THREE.EdgesGeometry(boxGeo);
+  boxGeo.dispose();
+  three.panelEdges = new THREE.LineSegments(
+    edgesGeo,
+    new THREE.LineBasicMaterial({ color: 0x4a4a60 })
+  );
+  scene.add(three.panelEdges);
 
-  // Grid sits on the floor under the panel
   three.grid.position.y = -pH / 2 - 0.5;
 
-  // Reset camera to a nice initial angle
   const dist = Math.max(pW, pH) * 1.55;
   three.camera.position.set(pW * 0.45, pH * 0.2, dist);
   three.controls.target.set(0, 0, 0);
   three.controls.update();
 }
 
-function resize3D() {
+// Convert Paper.js canvas coords → 3D panel-surface coords
+function paperTo3D(px, py) {
+  const { W, H } = getPx();
+  return new THREE.Vector3(
+    (px / W) * App.panelW - App.panelW / 2,
+    -(py / H) * App.panelH + App.panelH / 2,
+    three.panelDepth / 2 + 0.15   // just proud of the front face
+  );
+}
+
+// Rebuild 3D line geometry from all visible Paper.js paths
+function refresh3DLines() {
   if (!three) return;
-  const mount = document.getElementById('three-mount');
-  const w = mount.clientWidth, h = mount.clientHeight;
-  if (!w || !h) return;
-  three.camera.aspect = w / h;
-  three.camera.updateProjectionMatrix();
-  three.renderer.setSize(w, h);
+
+  // Dispose previous line group
+  if (three.linesGroup) {
+    three.scene.remove(three.linesGroup);
+    three.linesGroup.traverse(obj => {
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) obj.material.dispose();
+    });
+  }
+
+  const group = new THREE.Group();
+  three.linesGroup = group;
+  three.scene.add(group);
+
+  // Collect all visible Paper.js paths
+  const paths = paper.project.getItems({
+    class: paper.Path,
+    match: p => p.isVisible() && p.curves && p.curves.length > 0,
+  });
+
+  paths.forEach(path => {
+    const sc    = path.strokeColor;
+    const color = sc ? new THREE.Color(sc.red, sc.green, sc.blue)
+                     : new THREE.Color(0x5c3d1e);
+    const alpha = sc ? (sc.alpha ?? 1) : 1;
+
+    // Build one continuous polyline per Paper.js path by sampling each
+    // cubic bezier segment via THREE.CubicBezierCurve3
+    const allPts = [];
+    path.curves.forEach(c => {
+      const hOut = c.segment1.handleOut; // relative to segment1.point
+      const hIn  = c.segment2.handleIn;  // relative to segment2.point
+      const p0 = paperTo3D(c.segment1.point.x,          c.segment1.point.y);
+      const p1 = paperTo3D(c.segment1.point.x + hOut.x, c.segment1.point.y + hOut.y);
+      const p2 = paperTo3D(c.segment2.point.x + hIn.x,  c.segment2.point.y + hIn.y);
+      const p3 = paperTo3D(c.segment2.point.x,          c.segment2.point.y);
+
+      const pts = new THREE.CubicBezierCurve3(p0, p1, p2, p3).getPoints(24);
+      // Skip the first point of each curve after the first to avoid duplicates
+      if (allPts.length) pts.shift();
+      allPts.push(...pts);
+    });
+
+    if (allPts.length < 2) return;
+
+    const geo = new THREE.BufferGeometry().setFromPoints(allPts);
+    const mat = new THREE.LineBasicMaterial({
+      color, transparent: alpha < 0.99, opacity: alpha,
+    });
+    group.add(new THREE.Line(geo, mat));
+  });
 }
 
 // ── Layer management ─────────────────────────────────────────────
