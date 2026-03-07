@@ -88,6 +88,8 @@ canvas{display:block;background:#f4f0e8}
 #view-3d{flex:1;display:flex;flex-direction:column;overflow:hidden}
 #view3d-bar{height:38px;display:flex;align-items:center;padding:0 14px;gap:8px;border-bottom:1px solid var(--bd);background:var(--sf);flex-shrink:0;font-size:11px;font-weight:600;color:var(--ac2)}
 #view3d-bar .hint{font-weight:400;font-size:10px;color:var(--dm)}
+#depth-lbl{margin-left:auto;font-weight:400;font-size:10px;color:var(--dm);display:flex;align-items:center;gap:4px}
+#depth-lbl input{width:38px;background:var(--sf2);border:1px solid var(--bd);color:var(--tx);border-radius:3px;padding:2px 4px;font-size:11px;text-align:right}
 #three-mount{flex:1;overflow:hidden}
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
 </style>
@@ -142,6 +144,7 @@ canvas{display:block;background:#f4f0e8}
       <div id="view3d-bar">
         3D Preview
         <span class="hint">drag · rotate &nbsp;|&nbsp; scroll · zoom &nbsp;|&nbsp; right-drag · pan</span>
+        <label id="depth-lbl">Depth <input id="s-depth" type="number" min="1" max="50" step="0.5" value="3"> cm</label>
       </div>
       <div id="three-mount"></div>
     </div>
@@ -155,7 +158,7 @@ canvas{display:block;background:#f4f0e8}
 const PX = 5; // pixels per cm
 
 let _uid = 1;
-const App = { panelW: 120, panelH: 180, showGrid: true };
+const App = { panelW: 120, panelH: 180, panelDepth: 3, showGrid: true };
 let layers = [];
 let paperLs = {}; // id → paper.Layer
 
@@ -520,6 +523,15 @@ function init3D() {
   const grid = new THREE.GridHelper(2000, 40, 0x3a3a48, 0x252530);
   scene.add(grid);
 
+  const ambLight = new THREE.AmbientLight(0xffffff, 0.55);
+  scene.add(ambLight);
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
+  dirLight.position.set(80, 160, 200);
+  scene.add(dirLight);
+  const fillLight = new THREE.DirectionalLight(0xaabbff, 0.3);
+  fillLight.position.set(-100, -60, -80);
+  scene.add(fillLight);
+
   three = { renderer, scene, camera, controls,
             panelEdges: null, linesGroup: null, grid, panelDepth: 3 };
   rebuild3DPanel();
@@ -551,7 +563,7 @@ function rebuild3DPanel() {
 
   const pW = App.panelW;
   const pH = App.panelH;
-  const pD = Math.max(2, pW * 0.022);
+  const pD = App.panelDepth;
   three.panelDepth = pD;
 
   // Subtle panel frame — edges only, no filled surface
@@ -572,14 +584,13 @@ function rebuild3DPanel() {
   three.controls.update();
 }
 
-// Convert Paper.js canvas coords → 3D panel-surface coords
-function paperTo3D(px, py) {
+// Convert Paper.js canvas coords → 3D panel (x, y) — z is handled per use
+function paperToXY(px, py) {
   const { W, H } = getPx();
-  return new THREE.Vector3(
-    (px / W) * App.panelW - App.panelW / 2,
-    -(py / H) * App.panelH + App.panelH / 2,
-    three.panelDepth / 2 + 0.15   // just proud of the front face
-  );
+  return {
+    x:  (px / W) * App.panelW - App.panelW / 2,
+    y: -(py / H) * App.panelH + App.panelH / 2,
+  };
 }
 
 // Rebuild 3D line geometry from all visible Paper.js paths
@@ -611,36 +622,57 @@ function refresh3DLines() {
     });
   });
 
+  const depth = three.panelDepth;
+  const half  = depth / 2;
+
   paths.forEach(path => {
     const sc    = path.strokeColor;
     const color = sc ? new THREE.Color(sc.red, sc.green, sc.blue)
                      : new THREE.Color(0x5c3d1e);
     const alpha = sc ? (sc.alpha ?? 1) : 1;
 
-    // Build one continuous polyline per Paper.js path by sampling each
-    // cubic bezier segment via THREE.CubicBezierCurve3
-    const allPts = [];
+    // Sample the path as (x, y) spine points in 3D panel space
+    const spine = [];
     path.curves.forEach(c => {
-      const hOut = c.segment1.handleOut; // relative to segment1.point
-      const hIn  = c.segment2.handleIn;  // relative to segment2.point
-      const p0 = paperTo3D(c.segment1.point.x,          c.segment1.point.y);
-      const p1 = paperTo3D(c.segment1.point.x + hOut.x, c.segment1.point.y + hOut.y);
-      const p2 = paperTo3D(c.segment2.point.x + hIn.x,  c.segment2.point.y + hIn.y);
-      const p3 = paperTo3D(c.segment2.point.x,          c.segment2.point.y);
-
+      const hOut = c.segment1.handleOut;
+      const hIn  = c.segment2.handleIn;
+      const toV3 = (px, py) => { const {x,y} = paperToXY(px, py); return new THREE.Vector3(x, y, 0); };
+      const p0 = toV3(c.segment1.point.x,          c.segment1.point.y);
+      const p1 = toV3(c.segment1.point.x + hOut.x, c.segment1.point.y + hOut.y);
+      const p2 = toV3(c.segment2.point.x + hIn.x,  c.segment2.point.y + hIn.y);
+      const p3 = toV3(c.segment2.point.x,           c.segment2.point.y);
       const pts = new THREE.CubicBezierCurve3(p0, p1, p2, p3).getPoints(24);
-      // Skip the first point of each curve after the first to avoid duplicates
-      if (allPts.length) pts.shift();
-      allPts.push(...pts);
+      if (spine.length) pts.shift();
+      spine.push(...pts);
     });
 
-    if (allPts.length < 2) return;
+    if (spine.length < 2) return;
 
-    const geo = new THREE.BufferGeometry().setFromPoints(allPts);
-    const mat = new THREE.LineBasicMaterial({
-      color, transparent: alpha < 0.99, opacity: alpha,
+    // Build a ribbon mesh: two vertices per spine point (front z=+half, back z=-half)
+    const n   = spine.length;
+    const pos = new Float32Array(n * 6);
+    for (let i = 0; i < n; i++) {
+      const p = spine[i];
+      pos[i*6+0] = p.x;  pos[i*6+1] = p.y;  pos[i*6+2] =  half;  // front
+      pos[i*6+3] = p.x;  pos[i*6+4] = p.y;  pos[i*6+5] = -half;  // back
+    }
+    const idx = new Uint32Array((n-1) * 6);
+    for (let i = 0; i < n-1; i++) {
+      const a = i*2, b = i*2+1, c = (i+1)*2, d = (i+1)*2+1;
+      idx[i*6+0]=a; idx[i*6+1]=c; idx[i*6+2]=b;
+      idx[i*6+3]=b; idx[i*6+4]=c; idx[i*6+5]=d;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    geo.computeVertexNormals();
+
+    const mat = new THREE.MeshStandardMaterial({
+      color, side: THREE.DoubleSide,
+      transparent: alpha < 0.99, opacity: alpha,
+      roughness: 0.55, metalness: 0.05,
     });
-    group.add(new THREE.Line(geo, mat));
+    group.add(new THREE.Mesh(geo, mat));
   });
 }
 
@@ -871,6 +903,12 @@ window.addEventListener('DOMContentLoaded', () => {
     resizeCanvas(); fitCanvas(); fullRedraw(); rebuild3DPanel();
   };
   ['s-pw', 's-ph'].forEach(id => document.getElementById(id).addEventListener('change', onPanel));
+
+  document.getElementById('s-depth').addEventListener('change', e => {
+    App.panelDepth = Math.max(1, Math.min(50, +e.target.value || 3));
+    e.target.value = App.panelDepth;
+    rebuild3DPanel(); refresh3DLines();
+  });
 
   const picker = document.getElementById('gen-picker');
   document.getElementById('add-btn').addEventListener('click', e => {
