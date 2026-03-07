@@ -599,9 +599,16 @@ function refresh3DLines() {
   three.linesGroup = group;
   three.scene.add(group);
 
-  // Collect all visible Paper.js paths
-  const paths = paper.project.getItems({
-    match: p => p instanceof paper.Path && p.isVisible() && p.curves && p.curves.length > 0,
+  // Collect all visible Paper.js paths by walking our own layer map
+  const paths = [];
+  layers.forEach(layer => {
+    if (!layer.visible) return;
+    const pl = paperLs[layer.id];
+    if (!pl) return;
+    pl.children.forEach(item => {
+      if (item instanceof paper.Path && item.curves && item.curves.length > 0)
+        paths.push(item);
+    });
   });
 
   paths.forEach(path => {
