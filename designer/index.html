@@ -158,8 +158,8 @@ const GEN_META = {
 // Generator-specific defaults. segments lives on the layer; repeats is per-generator.
 const GEN_DEF = {
   straight: {},
-  sine:     { amplitude: 6, cycleH: 60, visibleCycles: 0, bunch: 0 },
-  bezier:   { amplitude: 8, sharpness: 0.0, cycleH: 60, visibleCycles: 0, bunch: 0 },
+  sine:     { amplitude: 6, cycleH: 60, visibleCycles: 0, bunch: 0, startPhase: 'center' },
+  bezier:   { amplitude: 8, sharpness: 0.0, cycleH: 60, visibleCycles: 0, bunch: 0, startPhase: 'center' },
   arch:     { depth: 60, sharpness: 0.0 },
   square:   { amplitude: 6, cornerRadius: 0, cycleH: 60, visibleCycles: 0, bunch: 0 },
 };
@@ -196,12 +196,14 @@ function genSine(p, segWidth, H) {
   const nCycles = (p.visibleCycles > 0) ? Math.min(maxCycles, p.visibleCycles) : maxCycles;
   const totalH  = nCycles * cycleH;
   const k       = (p.bunch || 0) * 5;
+  const phase   = p.startPhase === 'peak' ? Math.PI / 2
+                : p.startPhase === 'valley' ? -Math.PI / 2 : 0;
   const N       = Math.max(60, nCycles * 40);
   const pts     = [];
   for (let s = 0; s <= N; s++) {
     const t = s / N;
     const x = Math.max(-halfSeg, Math.min(halfSeg,
-                amp * Math.sin(2 * Math.PI * nCycles * t)));
+                amp * Math.sin(2 * Math.PI * nCycles * t + phase)));
     pts.push(new paper.Point(x, bunchY(t, k) * totalH));
   }
   return new paper.Path(pts);
@@ -218,19 +220,41 @@ function genBezier(p, segWidth, H) {
   const nCycles = (p.visibleCycles > 0) ? Math.min(maxCycles, p.visibleCycles) : maxCycles;
   const totalH  = nCycles * cycleH;
   const k       = (p.bunch || 0) * 5;
-  const cpX     = (4 / 3) * amp;
   const path    = new paper.Path();
-  path.moveTo(new paper.Point(0, 0));
-  for (let c = 0; c < nCycles; c++) {
-    const dir  = c % 2 === 0 ? 1 : -1;
-    const y0   = bunchY(c / nCycles, k) * totalH;
-    const y1   = bunchY((c + 1) / nCycles, k) * totalH;
-    const hv   = ((y1 - y0) / 2) * p.sharpness;
-    path.cubicCurveTo(
-      new paper.Point(cpX * dir, y0 + hv),
-      new paper.Point(cpX * dir, y1 - hv),
-      new paper.Point(0,         y1)
-    );
+
+  if (p.startPhase === 'center') {
+    // ── Zero-crossing start: arches from x=0 to x=0 ─────────────
+    const cpX = (4 / 3) * amp;
+    path.moveTo(new paper.Point(0, 0));
+    for (let c = 0; c < nCycles; c++) {
+      const dir = c % 2 === 0 ? 1 : -1;
+      const y0  = bunchY(c / nCycles, k) * totalH;
+      const y1  = bunchY((c + 1) / nCycles, k) * totalH;
+      const hv  = ((y1 - y0) / 2) * p.sharpness;
+      path.cubicCurveTo(
+        new paper.Point(cpX * dir, y0 + hv),
+        new paper.Point(cpX * dir, y1 - hv),
+        new paper.Point(0,         y1)
+      );
+    }
+  } else {
+    // ── Peak / valley start: S-curves from extreme to extreme ────
+    // Each arch goes peak→valley (or valley→peak), so CP tangents are
+    // vertical — cpY = cycH/3 gives the closest sine-like S-shape.
+    const startX = p.startPhase === 'peak' ? amp : -amp;
+    path.moveTo(new paper.Point(startX, 0));
+    for (let c = 0; c < nCycles; c++) {
+      const y0    = bunchY(c / nCycles, k) * totalH;
+      const y1    = bunchY((c + 1) / nCycles, k) * totalH;
+      const cpY   = (y1 - y0) / 3;
+      const fromX = c % 2 === 0 ? startX : -startX;
+      const toX   = -fromX;
+      path.cubicCurveTo(
+        new paper.Point(fromX, y0 + cpY),
+        new paper.Point(toX,   y1 - cpY),
+        new paper.Point(toX,   y1)
+      );
+    }
   }
   return path;
 }
@@ -511,13 +535,14 @@ function buildGenCtrls(layer) {
   const cycleRow   = srow('Cycle height (cm)',        'cycleH',        5,   200, 5,    p.cycleH);
   const visRow     = srow('Visible cycles (0 = all)', 'visibleCycles', 0,   40,  1,    p.visibleCycles);
   const bunchRow   = srow('Bunching',                 'bunch',         0,   1,   0.01, p.bunch);
+  const phaseRow   = selrow('Phase start', 'startPhase', ['center', 'peak', 'valley'], p.startPhase);
   if (layer.gen === 'sine')
     return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
-         + cycleRow + visRow + bunchRow;
+         + phaseRow + cycleRow + visRow + bunchRow;
   if (layer.gen === 'bezier')
     return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
          + srow('Sharpness',      'sharpness', 0, 1,  0.01, p.sharpness)
-         + cycleRow + visRow + bunchRow;
+         + phaseRow + cycleRow + visRow + bunchRow;
   if (layer.gen === 'arch')
     return srow('Depth (cm)',  'depth',     1, 200, 1,    p.depth)
          + srow('Sharpness',   'sharpness', 0, 0.95, 0.05, p.sharpness);
