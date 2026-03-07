@@ -189,6 +189,7 @@ const GEN_META = {
   bezier:      { label: 'Bézier',      icon: '〜' },
   arch:        { label: 'Arch',        icon: '⌒' },
   square:      { label: 'Square Wave', icon: '⊓' },
+  circle:      { label: 'Circle',      icon: '○' },
 };
 
 // Generator-specific defaults. segments lives on the layer; repeats is per-generator.
@@ -196,8 +197,9 @@ const GEN_DEF = {
   straight: {},
   sine:     { amplitude: 6, cycleH: 60, visibleCycles: 0, bunch: 0, startPhase: 'center' },
   bezier:   { amplitude: 8, sharpness: 0.0, cycleH: 60, visibleCycles: 0, bunch: 0, startPhase: 'center' },
-  arch:     { depth: 60, sharpness: 0.0 },
+  arch:     { depth: 60, sharpness: 0.0, inset: 0 },
   square:   { amplitude: 6, cornerRadius: 0, cycleH: 60, visibleCycles: 0, bunch: 0 },
+  circle:   { diameter: 20, yPos: 50 },
 };
 
 // ── Bunching helper ──────────────────────────────────────────────
@@ -310,8 +312,8 @@ function genArch(p, segWidth, H, sw) {
   const hit_y  = Math.min(p.depth * PX, H - 1);
   // Control-point y: 0 = round sweep (CP near top), → hit_y = steep then sharp turn
   const y_cp   = p.sharpness * hit_y;
-  // Landing x: inset by half stroke so the full stroke is inside the segment
-  const xLand  = -halfW + halfSW;
+  // Landing x: inset by half stroke + user inset so the full stroke is inside the segment
+  const xLand  = -halfW + halfSW + p.inset * PX;
 
   const path = new paper.Path();
   path.moveTo(new paper.Point(halfW, 0));
@@ -394,6 +396,48 @@ function genSquare(p, segWidth, H) {
 
 const GEN_FNS = { straight: genStraight, sine: genSine, bezier: genBezier, arch: genArch, square: genSquare };
 
+// Circle: one circle per segment, centered on the segment's midline.
+// If diameter > segWidth the arc is clipped to the segment boundary so
+// no stroke bleeds into the adjacent segment.
+function drawCircles(layer) {
+  const { W, H } = getPx();
+  const n     = layer.segments;
+  const segW  = W / n;
+  const p     = layer.params;
+  const sc    = new paper.Color(layer.style.color);
+  const sw    = layer.style.strokeWidth * PX;
+  const style = path => { path.strokeColor = sc; path.strokeWidth = sw; path.fillColor = null; };
+
+  for (let i = 0; i < n; i++) {
+    const cx     = (i + 0.5) * segW;          // horizontal centre of segment
+    const cy     = (p.yPos / 100) * H;        // vertical centre from top
+    const radius = p.diameter * PX / 2;
+    const halfW  = segW / 2;
+
+    if (radius <= 0) continue;
+
+    if (radius <= halfW) {
+      // Full circle fits inside the segment
+      style(new paper.Path.Circle(new paper.Point(cx, cy), radius));
+    } else {
+      // Clip to segment boundary: draw two open arcs (top and bottom)
+      const yClip = Math.sqrt(radius * radius - halfW * halfW);
+      const lx = cx - halfW;
+      const rx = cx + halfW;
+
+      const topArc = new paper.Path();
+      topArc.moveTo(new paper.Point(lx, cy - yClip));
+      topArc.arcTo(new paper.Point(cx, cy - radius), new paper.Point(rx, cy - yClip));
+      style(topArc);
+
+      const botArc = new paper.Path();
+      botArc.moveTo(new paper.Point(rx, cy + yClip));
+      botArc.arcTo(new paper.Point(cx, cy + radius), new paper.Point(lx, cy + yClip));
+      style(botArc);
+    }
+  }
+}
+
 // ── Segment placement ─────────────────────────────────────────────
 // basePath is centered at x=0. Stamp it once per segment, centered in
 // each strip. Mirror (LRLR): odd segments are x-flipped around their
@@ -443,6 +487,7 @@ function drawIntoLayer(layer, pl) {
   pl.activate();
   if (!layer.visible) return;
   drawSegmentLines(layer);
+  if (layer.gen === 'circle') { drawCircles(layer); return; }
   const fn = GEN_FNS[layer.gen];
   if (!fn) return;
   const { W, H } = getPx();
@@ -794,12 +839,16 @@ function buildGenCtrls(layer) {
          + srow('Sharpness',      'sharpness', 0, 1,  0.01, p.sharpness)
          + phaseRow + cycleRow + visRow + bunchRow;
   if (layer.gen === 'arch')
-    return srow('Depth (cm)',  'depth',     1, 200, 1,    p.depth)
-         + srow('Sharpness',   'sharpness', 0, 0.95, 0.05, p.sharpness);
+    return srow('Depth (cm)',    'depth',     1, 200,  1,    p.depth)
+         + srow('Sharpness',     'sharpness', 0, 0.95, 0.05, p.sharpness)
+         + srow('Side inset (cm)', 'inset',   0, 50,   0.5,  p.inset);
   if (layer.gen === 'square')
     return srow('Amplitude (cm)',      'amplitude',    0, 30, 0.5,  p.amplitude)
          + srow('Corner radius (cm)',  'cornerRadius', 0, 15, 0.25, p.cornerRadius)
          + cycleRow + visRow + bunchRow;
+  if (layer.gen === 'circle')
+    return srow('Diameter (cm)', 'diameter', 1, 200, 1, p.diameter)
+         + srow('Height (%)',    'yPos',     0, 100, 1, p.yPos);
   return '';
 }
 
@@ -819,9 +868,9 @@ function buildCard(layer) {
     <div class="lbody">
       <div class="csec">
         <div class="ctitle">Grid</div>
-        ${selrow('Segments',  'segments',  SEG_OPTS,                  layer.segments)}
-        ${selrow('Direction', 'direction', ['LLLL','LRLR','RRRR'],    layer.direction)}
-        ${chkrow('Flip vertical', 'flipV', layer.flipV)}
+        ${selrow('Segments', 'segments', SEG_OPTS, layer.segments)}
+        ${layer.gen !== 'circle' ? selrow('Direction', 'direction', ['LLLL','LRLR','RRRR'], layer.direction) : ''}
+        ${layer.gen !== 'circle' ? chkrow('Flip vertical', 'flipV', layer.flipV) : ''}
       </div>
       ${gc ? `<div class="csec"><div class="ctitle">Generator</div>${gc}</div>` : ''}
       <div class="csec">
