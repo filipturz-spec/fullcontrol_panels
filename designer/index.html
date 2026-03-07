@@ -150,6 +150,8 @@ canvas{display:block;background:#1e1c18}
           <span class="bsep">|</span>
           Width <input type="number" id="b-sw" min="0.1" max="10" step="0.1" value="0.5"> cm
         </span>
+        <span class="bsep">|</span>
+        Lines <input type="color" id="line-color" value="#aaaaaa" title="Line colour for all layers">
       </div>
       <div id="canvas-scroll">
         <div id="canvas-inner"><canvas id="cv"></canvas></div>
@@ -175,6 +177,7 @@ const PX = 5; // pixels per cm
 let _uid = 1;
 const App = {
   panelW: 120, panelH: 180, panelDepth: 3, showGrid: true,
+  lineColor: '#aaaaaa',
   border: { strokeWidth: 0.5, walls: { top: true, right: true, bottom: true, left: true } },
 };
 let layers = [];
@@ -405,7 +408,7 @@ function drawCircles(layer) {
   const n    = layer.segments;
   const segW = W / n;
   const p    = layer.params;
-  const sc   = new paper.Color(layer.style.color);
+  const sc   = new paper.Color(App.lineColor);
   const sw   = layer.style.strokeWidth * PX;
   const mk   = pts => {
     const path = new paper.Path(pts);
@@ -471,7 +474,7 @@ function drawSegments(layer, basePath) {
     // Flip horizontally around the segment centre cx.
     // Matrix(-1,0,0,1, 2*cx,0) maps x → 2*cx − x, y → y.
     if (flip) path.transform(new paper.Matrix(-1, 0, 0, 1, 2 * cx, 0));
-    path.strokeColor = new paper.Color(layer.style.color);
+    path.strokeColor = new paper.Color(App.lineColor);
     path.strokeWidth = layer.style.strokeWidth * PX;
     path.fillColor   = null;
     path.strokeCap   = 'round';
@@ -780,7 +783,7 @@ function addLayer(gen) {
     direction: 'LLLL', // 'LLLL' | 'LRLR' | 'RRRR'
     flipV:     false,
     params:   Object.assign({}, GEN_DEF[gen]),
-    style:    { color: '#aaaaaa', strokeWidth: 0.3 },
+    style:    { strokeWidth: 0.3 },
   };
   layers.push(layer);
   renderLayers();
@@ -890,7 +893,6 @@ function buildCard(layer) {
       ${gc ? `<div class="csec"><div class="ctitle">Generator</div>${gc}</div>` : ''}
       <div class="csec">
         <div class="ctitle">Style</div>
-        ${crow('Color', 's_color', s.color)}
         ${srow('Stroke width (cm)', 's_strokeWidth', 0.02, 0.8, 0.02, s.strokeWidth)}
       </div>
     </div>`;
@@ -916,12 +918,6 @@ function wireCard(card, layer) {
     sel.addEventListener('change', e => {
       const raw = e.target.value;
       setParam(layer, sel.dataset.k, isNaN(raw) ? raw : +raw);
-      schedRedraw(layer.id);
-    }));
-
-  card.querySelectorAll('.ccol').forEach(el =>
-    el.addEventListener('input', e => {
-      setParam(layer, el.dataset.k, e.target.value);
       schedRedraw(layer.id);
     }));
 
@@ -1036,6 +1032,11 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('b-sw').addEventListener('change', e => {
     App.border.strokeWidth = Math.max(0.1, +e.target.value || 0.5);
     e.target.value = App.border.strokeWidth;
+    fullRedraw();
+  });
+
+  document.getElementById('line-color').addEventListener('input', e => {
+    App.lineColor = e.target.value;
     fullRedraw();
   });
 
