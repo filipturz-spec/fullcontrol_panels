@@ -520,15 +520,13 @@ function drawIntoLayer(layer, pl) {
 
 function drawBorder() {
   const { W, H } = getPx();
-  const BORDER_COLOR = '#aaaaaa';
   const sw = App.border.strokeWidth * PX;
   const { walls } = App.border;
   const seg = (x1, y1, x2, y2) => {
     const p = new paper.Path([new paper.Point(x1, y1), new paper.Point(x2, y2)]);
-    p.strokeColor = new paper.Color(BORDER_COLOR);
+    p.strokeColor = new paper.Color(App.lineColor);
     p.strokeWidth = sw; p.fillColor = null;
-    p.data.color  = BORDER_COLOR;
-    p.data.isBorderPath = true;
+    p.data.color  = App.lineColor;
   };
   if (walls.top)    seg(0, 0, W, 0);
   if (walls.right)  seg(W, 0, W, H);
