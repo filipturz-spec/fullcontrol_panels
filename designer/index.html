@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Partition Screen Designer</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/paper.js/0.12.17/paper-full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -75,12 +77,18 @@ body{background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;font-
 #btn-export{font-weight:600}
 
 /* ── Canvas area ── */
-#canvas-wrap{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
+#canvas-wrap{flex:1;display:flex;flex-direction:row;overflow:hidden;background:var(--bg)}
+#view-2d{display:flex;flex-direction:column;flex:0 0 auto;overflow:hidden;border-right:1px solid var(--bd)}
 #canvas-toolbar{height:38px;display:flex;align-items:center;gap:14px;padding:0 14px;border-bottom:1px solid var(--bd);background:var(--sf);flex-shrink:0;font-size:11px;color:var(--dm)}
 #canvas-toolbar label{display:flex;align-items:center;gap:5px;white-space:nowrap}
 #canvas-scroll{flex:1;overflow:hidden;padding:24px;display:flex;justify-content:center;align-items:flex-start}
 #canvas-inner{display:inline-block;box-shadow:0 4px 32px rgba(0,0,0,.7)}
 canvas{display:block;background:#f4f0e8}
+/* ── 3D view ── */
+#view-3d{flex:1;display:flex;flex-direction:column;overflow:hidden}
+#view3d-bar{height:38px;display:flex;align-items:center;padding:0 14px;gap:8px;border-bottom:1px solid var(--bd);background:var(--sf);flex-shrink:0;font-size:11px;font-weight:600;color:var(--ac2)}
+#view3d-bar .hint{font-weight:400;font-size:10px;color:var(--dm)}
+#three-mount{flex:1;overflow:hidden}
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
 </style>
 </head>
@@ -122,11 +130,20 @@ canvas{display:block;background:#f4f0e8}
   </aside>
 
   <main id="canvas-wrap">
-    <div id="canvas-toolbar">
-      <label><input type="checkbox" id="show-grid" checked> Border</label>
+    <div id="view-2d">
+      <div id="canvas-toolbar">
+        <label><input type="checkbox" id="show-grid" checked> Border</label>
+      </div>
+      <div id="canvas-scroll">
+        <div id="canvas-inner"><canvas id="cv"></canvas></div>
+      </div>
     </div>
-    <div id="canvas-scroll">
-      <div id="canvas-inner"><canvas id="cv"></canvas></div>
+    <div id="view-3d">
+      <div id="view3d-bar">
+        3D Preview
+        <span class="hint">drag · rotate &nbsp;|&nbsp; scroll · zoom &nbsp;|&nbsp; right-drag · pan</span>
+      </div>
+      <div id="three-mount"></div>
     </div>
   </main>
 </div>
@@ -465,9 +482,108 @@ function fitCanvas() {
   const scroll = document.getElementById('canvas-scroll');
   const margin = 24;
   const scale  = (scroll.clientHeight - margin * 2) / H;
+  const dispW  = Math.round(W * scale);
   const cv     = paper.view.element;
-  cv.style.width  = Math.round(W * scale) + 'px';
+  cv.style.width  = dispW + 'px';
   cv.style.height = Math.round(H * scale) + 'px';
+  // Pin scroll (and therefore #view-2d) to exactly canvas + padding
+  scroll.style.width = (dispW + margin * 2) + 'px';
+}
+
+// ── 3D Preview (Three.js) ─────────────────────────────────────────
+let three = null;
+
+function init3D() {
+  const mount = document.getElementById('three-mount');
+  const w = mount.clientWidth || 600;
+  const h = mount.clientHeight || 600;
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(w, h);
+  mount.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x1a1a1e);
+  scene.fog = new THREE.FogExp2(0x1a1a1e, 0.0012);
+
+  const camera = new THREE.PerspectiveCamera(40, w / h, 0.1, 5000);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.65);
+  sun.position.set(150, 300, 400);
+  scene.add(sun);
+  const fill = new THREE.DirectionalLight(0xffffff, 0.2);
+  fill.position.set(-200, -100, 200);
+  scene.add(fill);
+
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.07;
+  controls.minDistance   = 5;
+  controls.maxDistance   = 3000;
+
+  const texture = new THREE.CanvasTexture(paper.view.element);
+
+  const grid = new THREE.GridHelper(2000, 40, 0x3a3a48, 0x252530);
+  scene.add(grid);
+
+  three = { renderer, scene, camera, controls, texture, panelMesh: null, grid };
+  rebuild3DPanel();
+
+  function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    three.texture.needsUpdate = true;
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  new ResizeObserver(resize3D).observe(mount);
+}
+
+function rebuild3DPanel() {
+  if (!three) return;
+  const { scene, texture } = three;
+
+  // Remove old mesh
+  if (three.panelMesh) {
+    scene.remove(three.panelMesh);
+    three.panelMesh.geometry.dispose();
+    three.panelMesh.material.forEach(m => m.dispose());
+    three.panelMesh = null;
+  }
+
+  const pW = App.panelW;
+  const pH = App.panelH;
+  const pD = Math.max(2, pW * 0.022); // realistic panel depth
+
+  const geo  = new THREE.BoxGeometry(pW, pH, pD);
+  const wood = new THREE.MeshStandardMaterial({ color: 0x8a5f28, roughness: 0.8, metalness: 0.05 });
+  const back = new THREE.MeshStandardMaterial({ color: 0xd8cbb0, roughness: 0.9 });
+  const front = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.7 });
+  // BoxGeometry face order: +x, -x, +y, -y, +z(front), -z(back)
+  three.panelMesh = new THREE.Mesh(geo, [wood, wood, wood, wood, front, back]);
+  scene.add(three.panelMesh);
+
+  // Grid sits on the floor under the panel
+  three.grid.position.y = -pH / 2 - 0.5;
+
+  // Reset camera to a nice initial angle
+  const dist = Math.max(pW, pH) * 1.55;
+  three.camera.position.set(pW * 0.45, pH * 0.2, dist);
+  three.controls.target.set(0, 0, 0);
+  three.controls.update();
+}
+
+function resize3D() {
+  if (!three) return;
+  const mount = document.getElementById('three-mount');
+  const w = mount.clientWidth, h = mount.clientHeight;
+  if (!w || !h) return;
+  three.camera.aspect = w / h;
+  three.camera.updateProjectionMatrix();
+  three.renderer.setSize(w, h);
 }
 
 // ── Layer management ─────────────────────────────────────────────
@@ -679,7 +795,7 @@ function loadJSON(file) {
       _uid       = layers.reduce((m, l) => Math.max(m, l.id), 0) + 1;
       document.getElementById('s-pw').value = App.panelW;
       document.getElementById('s-ph').value = App.panelH;
-      resizeCanvas(); fitCanvas(); renderLayers(); fullRedraw();
+      resizeCanvas(); fitCanvas(); renderLayers(); fullRedraw(); rebuild3DPanel();
     } catch (err) { alert('Load error: ' + err.message); }
   };
   r.readAsText(file);
@@ -688,11 +804,13 @@ function loadJSON(file) {
 // ── Init ─────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   initCanvas(); resizeCanvas(); fitCanvas(); renderLayers(); fullRedraw();
+  // Delay Three.js init by one frame so layout is fully computed
+  requestAnimationFrame(() => init3D());
 
   const onPanel = () => {
     App.panelW = Math.max(10, +document.getElementById('s-pw').value || 120);
     App.panelH = Math.max(10, +document.getElementById('s-ph').value || 180);
-    resizeCanvas(); fitCanvas(); fullRedraw();
+    resizeCanvas(); fitCanvas(); fullRedraw(); rebuild3DPanel();
   };
   ['s-pw', 's-ph'].forEach(id => document.getElementById(id).addEventListener('change', onPanel));
 
@@ -705,7 +823,7 @@ window.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('click', () => picker.classList.add('hidden'));
   picker.addEventListener('click', e => e.stopPropagation());
 
-  window.addEventListener('resize', fitCanvas);
+  window.addEventListener('resize', () => { fitCanvas(); resize3D(); });
 
   document.getElementById('show-grid').addEventListener('change', e => {
     App.showGrid = e.target.checked; fullRedraw();
