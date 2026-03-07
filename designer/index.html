@@ -532,6 +532,9 @@ function init3D() {
   animate();
 
   new ResizeObserver(resize3D).observe(mount);
+
+  // Paper.js has already rendered by the time Three.js inits — populate now
+  refresh3DLines();
 }
 
 function rebuild3DPanel() {
@@ -598,8 +601,7 @@ function refresh3DLines() {
 
   // Collect all visible Paper.js paths
   const paths = paper.project.getItems({
-    class: paper.Path,
-    match: p => p.isVisible() && p.curves && p.curves.length > 0,
+    match: p => p instanceof paper.Path && p.isVisible() && p.curves && p.curves.length > 0,
   });
 
   paths.forEach(path => {
