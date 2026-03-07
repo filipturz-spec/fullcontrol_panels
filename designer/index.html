@@ -397,44 +397,58 @@ function genSquare(p, segWidth, H) {
 
 const GEN_FNS = { straight: genStraight, sine: genSine, bezier: genBezier, arch: genArch, square: genSquare };
 
-// Circle: one circle per segment, centered on the segment's midline.
-// If diameter > segWidth the arc is clipped to the segment boundary so
-// no stroke bleeds into the adjacent segment.
+// Circle: one circle per segment, centred on the segment's midline.
+// Uses point-sampling (same pattern as genSine) to avoid Paper.js
+// Path.Circle / arcTo API quirks in 0.12.
 function drawCircles(layer) {
   const { W, H } = getPx();
-  const n     = layer.segments;
-  const segW  = W / n;
-  const p     = layer.params;
-  const sc    = new paper.Color(layer.style.color);
-  const sw    = layer.style.strokeWidth * PX;
-  const style = path => { path.strokeColor = sc; path.strokeWidth = sw; path.fillColor = null; };
+  const n    = layer.segments;
+  const segW = W / n;
+  const p    = layer.params;
+  const sc   = new paper.Color(layer.style.color);
+  const sw   = layer.style.strokeWidth * PX;
+  const mk   = pts => {
+    const path = new paper.Path(pts);
+    path.strokeColor = sc; path.strokeWidth = sw; path.fillColor = null;
+    return path;
+  };
 
   for (let i = 0; i < n; i++) {
-    const cx     = (i + 0.5) * segW;          // horizontal centre of segment
-    const cy     = (p.yPos / 100) * H;        // vertical centre from top
-    const radius = p.diameter * PX / 2;
-    const halfW  = segW / 2;
+    const cx    = (i + 0.5) * segW;
+    const cy    = (p.yPos / 100) * H;
+    const r     = p.diameter * PX / 2;
+    const halfW = segW / 2;
+    if (r <= 0) continue;
 
-    if (radius <= 0) continue;
-
-    if (radius <= halfW) {
-      // Full circle fits inside the segment
-      style(new paper.Path.Circle(new paper.Point(cx, cy), radius));
+    if (r <= halfW) {
+      // Full circle — 64 sample points, closed
+      const pts = [];
+      for (let t = 0; t < 64; t++) {
+        const θ = (t / 64) * 2 * Math.PI;
+        pts.push(new paper.Point(cx + r * Math.cos(θ), cy + r * Math.sin(θ)));
+      }
+      mk(pts).closed = true;
     } else {
-      // Clip to segment boundary: draw two open arcs (top and bottom)
-      const yClip = Math.sqrt(radius * radius - halfW * halfW);
-      const lx = cx - halfW;
-      const rx = cx + halfW;
+      // Circle wider than segment: show only the two visible arcs
+      // α = angle (from positive-x axis) where the circle meets x = cx±halfW
+      const α = Math.acos(halfW / r);
+      const N = 40;
 
-      const topArc = new paper.Path();
-      topArc.moveTo(new paper.Point(lx, cy - yClip));
-      topArc.arcTo(new paper.Point(cx, cy - radius), new paper.Point(rx, cy - yClip));
-      style(topArc);
+      // Top arc: θ from (α−π) → (−α), passes through −π/2 (top of circle)
+      const topPts = [];
+      for (let t = 0; t <= N; t++) {
+        const θ = (α - Math.PI) + (t / N) * (Math.PI - 2 * α);
+        topPts.push(new paper.Point(cx + r * Math.cos(θ), cy + r * Math.sin(θ)));
+      }
+      mk(topPts);
 
-      const botArc = new paper.Path();
-      botArc.moveTo(new paper.Point(rx, cy + yClip));
-      botArc.arcTo(new paper.Point(cx, cy + radius), new paper.Point(lx, cy + yClip));
-      style(botArc);
+      // Bottom arc: θ from α → (π−α), passes through π/2 (bottom of circle)
+      const botPts = [];
+      for (let t = 0; t <= N; t++) {
+        const θ = α + (t / N) * (Math.PI - 2 * α);
+        botPts.push(new paper.Point(cx + r * Math.cos(θ), cy + r * Math.sin(θ)));
+      }
+      mk(botPts);
     }
   }
 }
