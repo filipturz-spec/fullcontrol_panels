@@ -158,11 +158,21 @@ const GEN_META = {
 // Generator-specific defaults. segments lives on the layer; repeats is per-generator.
 const GEN_DEF = {
   straight: {},
-  sine:     { amplitude: 6, cycleH: 60, visibleCycles: 0 },
-  bezier:   { amplitude: 8, sharpness: 0.0, cycleH: 60, visibleCycles: 0 },
+  sine:     { amplitude: 6, cycleH: 60, visibleCycles: 0, bunch: 0 },
+  bezier:   { amplitude: 8, sharpness: 0.0, cycleH: 60, visibleCycles: 0, bunch: 0 },
   arch:     { depth: 60, sharpness: 0.0 },
-  square:   { amplitude: 6, cornerRadius: 0, cycleH: 60, visibleCycles: 0 },
+  square:   { amplitude: 6, cornerRadius: 0, cycleH: 60, visibleCycles: 0, bunch: 0 },
 };
+
+// ── Bunching helper ──────────────────────────────────────────────
+// Maps normalised position t ∈ [0,1] to a bunched position in [0,1].
+// k = 0  → identity (uniform spacing).
+// k > 0  → exponential: cycles dense at t=0, spread out near t=1.
+// k is derived from the 'bunch' param as k = bunch * 5.
+function bunchY(t, k) {
+  if (k <= 0) return t;
+  return (Math.exp(k * t) - 1) / (Math.exp(k) - 1);
+}
 
 // ── Generators ───────────────────────────────────────────────────
 // Each generator produces ONE full-height path for a single segment.
@@ -185,13 +195,14 @@ function genSine(p, segWidth, H) {
   if (maxCycles < 1) return new paper.Path();
   const nCycles = (p.visibleCycles > 0) ? Math.min(maxCycles, p.visibleCycles) : maxCycles;
   const totalH  = nCycles * cycleH;
+  const k       = (p.bunch || 0) * 5;
   const N       = Math.max(60, nCycles * 40);
   const pts     = [];
   for (let s = 0; s <= N; s++) {
     const t = s / N;
     const x = Math.max(-halfSeg, Math.min(halfSeg,
                 amp * Math.sin(2 * Math.PI * nCycles * t)));
-    pts.push(new paper.Point(x, t * totalH));
+    pts.push(new paper.Point(x, bunchY(t, k) * totalH));
   }
   return new paper.Path(pts);
 }
@@ -205,14 +216,16 @@ function genBezier(p, segWidth, H) {
   const maxCycles = Math.floor(H / cycleH);
   if (maxCycles < 1) return new paper.Path();
   const nCycles = (p.visibleCycles > 0) ? Math.min(maxCycles, p.visibleCycles) : maxCycles;
-  const cpX  = (4 / 3) * amp;
-  const path = new paper.Path();
+  const totalH  = nCycles * cycleH;
+  const k       = (p.bunch || 0) * 5;
+  const cpX     = (4 / 3) * amp;
+  const path    = new paper.Path();
   path.moveTo(new paper.Point(0, 0));
   for (let c = 0; c < nCycles; c++) {
-    const dir = c % 2 === 0 ? 1 : -1;
-    const y0  = c * cycleH;
-    const y1  = y0 + cycleH;
-    const hv  = (cycleH / 2) * p.sharpness;
+    const dir  = c % 2 === 0 ? 1 : -1;
+    const y0   = bunchY(c / nCycles, k) * totalH;
+    const y1   = bunchY((c + 1) / nCycles, k) * totalH;
+    const hv   = ((y1 - y0) / 2) * p.sharpness;
     path.cubicCurveTo(
       new paper.Point(cpX * dir, y0 + hv),
       new paper.Point(cpX * dir, y1 - hv),
@@ -260,19 +273,20 @@ function genSquare(p, segWidth, H) {
   const maxCycles = Math.floor(H / cycleH);
   if (maxCycles < 1) return new paper.Path();
   const nCycles = (p.visibleCycles > 0) ? Math.min(maxCycles, p.visibleCycles) : maxCycles;
-  const halfH = cycleH / 2;                                 // height of one half-period
-  const r     = Math.min((p.cornerRadius || 0) * PX,        // clamped corner radius
-                         halfH * 0.45, amp * 0.9);
-  const K     = 0.5523;                                      // bezier quarter-circle approx
+  const totalH  = nCycles * cycleH;
+  const k       = (p.bunch || 0) * 5;
+  const K       = 0.5523;                                      // bezier quarter-circle approx
 
   const path = new paper.Path();
   path.moveTo(new paper.Point(amp, 0));
 
   for (let c = 0; c < nCycles; c++) {
-    const y0 = c * halfH * 2;
-    const yM = y0 + halfH;
-    const y1 = y0 + halfH * 2;
-    const last = c === nCycles - 1;
+    const y0    = bunchY(c / nCycles, k) * totalH;
+    const y1    = bunchY((c + 1) / nCycles, k) * totalH;
+    const yM    = (y0 + y1) / 2;
+    const halfH = (y1 - y0) / 2;
+    const r     = Math.min((p.cornerRadius || 0) * PX, halfH * 0.45, amp * 0.9);
+    const last  = c === nCycles - 1;
 
     if (r <= 0) {
       // Sharp corners
@@ -494,22 +508,23 @@ function chkrow(lbl, k, checked) {
 function buildGenCtrls(layer) {
   const p = layer.params;
   if (layer.gen === 'straight') return '';
-  const cycleRow   = srow('Cycle height (cm)',      'cycleH',        5,  200, 5,    p.cycleH);
-  const visRow     = srow('Visible cycles (0 = all)', 'visibleCycles', 0, 40, 1,    p.visibleCycles);
+  const cycleRow   = srow('Cycle height (cm)',        'cycleH',        5,   200, 5,    p.cycleH);
+  const visRow     = srow('Visible cycles (0 = all)', 'visibleCycles', 0,   40,  1,    p.visibleCycles);
+  const bunchRow   = srow('Bunching',                 'bunch',         0,   1,   0.01, p.bunch);
   if (layer.gen === 'sine')
     return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
-         + cycleRow + visRow;
+         + cycleRow + visRow + bunchRow;
   if (layer.gen === 'bezier')
     return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
          + srow('Sharpness',      'sharpness', 0, 1,  0.01, p.sharpness)
-         + cycleRow + visRow;
+         + cycleRow + visRow + bunchRow;
   if (layer.gen === 'arch')
     return srow('Depth (cm)',  'depth',     1, 200, 1,    p.depth)
          + srow('Sharpness',   'sharpness', 0, 0.95, 0.05, p.sharpness);
   if (layer.gen === 'square')
     return srow('Amplitude (cm)',      'amplitude',    0, 30, 0.5,  p.amplitude)
          + srow('Corner radius (cm)',  'cornerRadius', 0, 15, 0.25, p.cornerRadius)
-         + cycleRow + visRow;
+         + cycleRow + visRow + bunchRow;
   return '';
 }
 
