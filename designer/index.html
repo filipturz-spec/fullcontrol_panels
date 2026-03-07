@@ -408,11 +408,12 @@ function drawCircles(layer) {
   const n    = layer.segments;
   const segW = W / n;
   const p    = layer.params;
-  const sc   = new paper.Color(App.lineColor);
   const sw   = layer.style.strokeWidth * PX;
   const mk   = pts => {
     const path = new paper.Path(pts);
-    path.strokeColor = sc; path.strokeWidth = sw; path.fillColor = null;
+    path.strokeColor = new paper.Color(App.lineColor);
+    path.strokeWidth = sw; path.fillColor = null;
+    path.data.color  = App.lineColor;
     return path;
   };
 
@@ -477,6 +478,7 @@ function drawSegments(layer, basePath) {
     path.strokeColor = new paper.Color(App.lineColor);
     path.strokeWidth = layer.style.strokeWidth * PX;
     path.fillColor   = null;
+    path.data.color  = App.lineColor;
     path.strokeCap   = 'round';
     path.strokeJoin  = 'round';
   }
@@ -518,12 +520,15 @@ function drawIntoLayer(layer, pl) {
 
 function drawBorder() {
   const { W, H } = getPx();
-  const sc = new paper.Color('#aaaaaa');
+  const BORDER_COLOR = '#aaaaaa';
   const sw = App.border.strokeWidth * PX;
   const { walls } = App.border;
   const seg = (x1, y1, x2, y2) => {
     const p = new paper.Path([new paper.Point(x1, y1), new paper.Point(x2, y2)]);
-    p.strokeColor = sc; p.strokeWidth = sw; p.fillColor = null;
+    p.strokeColor = new paper.Color(BORDER_COLOR);
+    p.strokeWidth = sw; p.fillColor = null;
+    p.data.color  = BORDER_COLOR;
+    p.data.isBorderPath = true;
   };
   if (walls.top)    seg(0, 0, W, 0);
   if (walls.right)  seg(W, 0, W, H);
@@ -722,10 +727,9 @@ function refresh3DLines() {
   const half  = depth / 2;
 
   paths.forEach(path => {
-    const sc    = path.strokeColor;
-    const color = sc ? new THREE.Color(sc.red, sc.green, sc.blue)
-                     : new THREE.Color(0xaaaaaa);
-    const alpha = sc ? (sc.alpha ?? 1) : 1;
+    const hex   = (path.data && path.data.color) || '#aaaaaa';
+    const color = new THREE.Color(hex);
+    const alpha = 1;
 
     // Sample the path as (x, y) spine points in 3D panel space
     const spine = [];
