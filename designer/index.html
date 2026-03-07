@@ -49,8 +49,9 @@ body{background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;font-
 .lname{flex:1;font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chev{font-size:9px;color:var(--dm);transition:transform .15s;flex-shrink:0}
 .lcard.open .chev{transform:rotate(90deg)}
-.delbtn{background:none;border:none;color:var(--dm);cursor:pointer;font-size:13px;line-height:1;padding:2px 3px;border-radius:3px;flex-shrink:0}
+.delbtn,.copybtn{background:none;border:none;color:var(--dm);cursor:pointer;font-size:13px;line-height:1;padding:2px 4px;border-radius:3px;flex-shrink:0}
 .delbtn:hover{background:var(--danger);color:#fff}
+.copybtn:hover{background:var(--ac);color:#fff}
 .lbody{display:none;padding:8px 10px 10px;border-top:1px solid var(--bd)}
 .lcard.open .lbody{display:block}
 
@@ -77,10 +78,8 @@ body{background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;font-
 #canvas-wrap{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
 #canvas-toolbar{height:38px;display:flex;align-items:center;gap:14px;padding:0 14px;border-bottom:1px solid var(--bd);background:var(--sf);flex-shrink:0;font-size:11px;color:var(--dm)}
 #canvas-toolbar label{display:flex;align-items:center;gap:5px;white-space:nowrap}
-#canvas-toolbar input[type=range]{width:80px;accent-color:var(--ac)}
-#zoom-label{min-width:30px}
-#canvas-scroll{flex:1;overflow:auto;padding:30px;display:flex;justify-content:center;align-items:flex-start}
-#canvas-inner{display:inline-block;box-shadow:0 4px 32px rgba(0,0,0,.7);transform-origin:top left}
+#canvas-scroll{flex:1;overflow:hidden;padding:24px;display:flex;justify-content:center;align-items:flex-start}
+#canvas-inner{display:inline-block;box-shadow:0 4px 32px rgba(0,0,0,.7)}
 canvas{display:block;background:#f4f0e8}
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
 </style>
@@ -124,8 +123,7 @@ canvas{display:block;background:#f4f0e8}
 
   <main id="canvas-wrap">
     <div id="canvas-toolbar">
-      <label>Zoom <input type="range" id="zoom-sl" min="20" max="200" value="60" step="5"> <span id="zoom-label">60%</span></label>
-      <label style="margin-left:auto"><input type="checkbox" id="show-grid" checked> Border</label>
+      <label><input type="checkbox" id="show-grid" checked> Border</label>
     </div>
     <div id="canvas-scroll">
       <div id="canvas-inner"><canvas id="cv"></canvas></div>
@@ -140,7 +138,7 @@ canvas{display:block;background:#f4f0e8}
 const PX = 5; // pixels per cm
 
 let _uid = 1;
-const App = { panelW: 120, panelH: 180, showGrid: true, zoom: 60 };
+const App = { panelW: 120, panelH: 180, showGrid: true };
 let layers = [];
 let paperLs = {}; // id → paper.Layer
 
@@ -462,13 +460,14 @@ function resizeCanvas() {
   cv.width  = W; cv.height = H;
   paper.view.viewSize = new paper.Size(W, H);
 }
-function applyZoom(z) {
-  const inner = document.getElementById('canvas-inner');
+function fitCanvas() {
   const { W, H } = getPx();
-  inner.style.width           = W + 'px';
-  inner.style.height          = H + 'px';
-  inner.style.transform       = `scale(${z / 100})`;
-  inner.style.transformOrigin = 'top left';
+  const scroll = document.getElementById('canvas-scroll');
+  const margin = 24;
+  const scale  = (scroll.clientHeight - margin * 2) / H;
+  const cv     = paper.view.element;
+  cv.style.width  = Math.round(W * scale) + 'px';
+  cv.style.height = Math.round(H * scale) + 'px';
 }
 
 // ── Layer management ─────────────────────────────────────────────
@@ -484,6 +483,17 @@ function addLayer(gen) {
     style:    { color: '#5c3d1e', strokeWidth: 0.3 },
   };
   layers.push(layer);
+  renderLayers();
+  fullRedraw();
+}
+
+function duplicateLayer(id) {
+  const src = layers.find(l => l.id === id);
+  if (!src) return;
+  const copy  = JSON.parse(JSON.stringify(src));
+  copy.id     = _uid++;
+  copy.name   = src.name + ' copy';
+  layers.splice(layers.indexOf(src) + 1, 0, copy);
   renderLayers();
   fullRedraw();
 }
@@ -563,7 +573,8 @@ function buildCard(layer) {
       <span class="badge">${m.icon} ${m.label}</span>
       <span class="lname">${layer.name}</span>
       <span class="chev">›</span>
-      <button class="delbtn" data-del>✕</button>
+      <button class="copybtn" data-copy title="Duplicate layer">⧉</button>
+      <button class="delbtn" data-del title="Delete layer">✕</button>
     </div>
     <div class="lbody">
       <div class="csec">
@@ -582,8 +593,9 @@ function buildCard(layer) {
 
 function wireCard(card, layer) {
   card.querySelector('.lhead').addEventListener('click', e => {
-    if (e.target.closest('[data-vis]')) { toggleVis(layer.id); return; }
-    if (e.target.closest('[data-del]')) { removeLayer(layer.id); return; }
+    if (e.target.closest('[data-vis]'))  { toggleVis(layer.id);      return; }
+    if (e.target.closest('[data-copy]')) { duplicateLayer(layer.id); return; }
+    if (e.target.closest('[data-del]'))  { removeLayer(layer.id);    return; }
     card.classList.toggle('open');
   });
 
@@ -667,7 +679,7 @@ function loadJSON(file) {
       _uid       = layers.reduce((m, l) => Math.max(m, l.id), 0) + 1;
       document.getElementById('s-pw').value = App.panelW;
       document.getElementById('s-ph').value = App.panelH;
-      resizeCanvas(); applyZoom(App.zoom); renderLayers(); fullRedraw();
+      resizeCanvas(); fitCanvas(); renderLayers(); fullRedraw();
     } catch (err) { alert('Load error: ' + err.message); }
   };
   r.readAsText(file);
@@ -675,12 +687,12 @@ function loadJSON(file) {
 
 // ── Init ─────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
-  initCanvas(); resizeCanvas(); applyZoom(App.zoom); renderLayers(); fullRedraw();
+  initCanvas(); resizeCanvas(); fitCanvas(); renderLayers(); fullRedraw();
 
   const onPanel = () => {
     App.panelW = Math.max(10, +document.getElementById('s-pw').value || 120);
     App.panelH = Math.max(10, +document.getElementById('s-ph').value || 180);
-    resizeCanvas(); applyZoom(App.zoom); fullRedraw();
+    resizeCanvas(); fitCanvas(); fullRedraw();
   };
   ['s-pw', 's-ph'].forEach(id => document.getElementById(id).addEventListener('change', onPanel));
 
@@ -693,13 +705,7 @@ window.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('click', () => picker.classList.add('hidden'));
   picker.addEventListener('click', e => e.stopPropagation());
 
-  const zoomSl  = document.getElementById('zoom-sl');
-  const zoomLbl = document.getElementById('zoom-label');
-  zoomSl.addEventListener('input', e => {
-    App.zoom = +e.target.value;
-    zoomLbl.textContent = App.zoom + '%';
-    applyZoom(App.zoom);
-  });
+  window.addEventListener('resize', fitCanvas);
 
   document.getElementById('show-grid').addEventListener('change', e => {
     App.showGrid = e.target.checked; fullRedraw();
