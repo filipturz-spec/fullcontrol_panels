@@ -79,8 +79,12 @@ body{background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;font-
 /* ── Canvas area ── */
 #canvas-wrap{flex:1;display:flex;flex-direction:row;overflow:hidden;background:var(--bg)}
 #view-2d{display:flex;flex-direction:column;flex:0 0 auto;overflow:hidden;border-right:1px solid var(--bd)}
-#canvas-toolbar{height:38px;display:flex;align-items:center;gap:14px;padding:0 14px;border-bottom:1px solid var(--bd);background:var(--sf);flex-shrink:0;font-size:11px;color:var(--dm)}
+#canvas-toolbar{min-height:38px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--bd);background:var(--sf);flex-shrink:0;font-size:11px;color:var(--dm);flex-wrap:wrap}
 #canvas-toolbar label{display:flex;align-items:center;gap:5px;white-space:nowrap}
+#border-opts{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+#border-opts .bsep{color:var(--bd)}
+.bwall{display:flex;align-items:center;gap:3px;cursor:pointer;font-size:10px;color:var(--dm)}
+#b-sw{width:36px;background:var(--sf2);border:1px solid var(--bd);color:var(--tx);border-radius:3px;padding:2px 4px;font-size:11px;text-align:right}
 #canvas-scroll{flex:1;overflow:hidden;padding:24px;display:flex;justify-content:center;align-items:flex-start}
 #canvas-inner{display:inline-block;box-shadow:0 4px 32px rgba(0,0,0,.7)}
 canvas{display:block;background:#1e1c18}
@@ -135,6 +139,16 @@ canvas{display:block;background:#1e1c18}
     <div id="view-2d">
       <div id="canvas-toolbar">
         <label><input type="checkbox" id="show-grid" checked> Border</label>
+        <span id="border-opts">
+          <span class="bsep">|</span>
+          Walls
+          <label class="bwall"><input type="checkbox" id="bw-top"    checked><span>T</span></label>
+          <label class="bwall"><input type="checkbox" id="bw-right"  checked><span>R</span></label>
+          <label class="bwall"><input type="checkbox" id="bw-bottom" checked><span>B</span></label>
+          <label class="bwall"><input type="checkbox" id="bw-left"   checked><span>L</span></label>
+          <span class="bsep">|</span>
+          Width <input type="number" id="b-sw" min="0.1" max="10" step="0.1" value="0.5"> cm
+        </span>
       </div>
       <div id="canvas-scroll">
         <div id="canvas-inner"><canvas id="cv"></canvas></div>
@@ -158,9 +172,13 @@ canvas{display:block;background:#1e1c18}
 const PX = 5; // pixels per cm
 
 let _uid = 1;
-const App = { panelW: 120, panelH: 180, panelDepth: 3, showGrid: true };
+const App = {
+  panelW: 120, panelH: 180, panelDepth: 3, showGrid: true,
+  border: { strokeWidth: 0.5, walls: { top: true, right: true, bottom: true, left: true } },
+};
 let layers = [];
-let paperLs = {}; // id → paper.Layer
+let paperLs = {};          // id → paper.Layer
+let borderPaperLayer = null;
 
 // Segment counts are powers of 2: grid lines of any two layers always coincide.
 const SEG_OPTS = [2, 4, 8, 16, 32];
@@ -436,16 +454,23 @@ function drawIntoLayer(layer, pl) {
 
 function drawBorder() {
   const { W, H } = getPx();
-  const b = new paper.Path.Rectangle(new paper.Rectangle(0, 0, W, H));
-  b.strokeColor = new paper.Color(0, 0, 0, 0.3);
-  b.strokeWidth = 1.5;
-  b.fillColor   = null;
+  const sc = new paper.Color('#aaaaaa');
+  const sw = App.border.strokeWidth * PX;
+  const { walls } = App.border;
+  const seg = (x1, y1, x2, y2) => {
+    const p = new paper.Path([new paper.Point(x1, y1), new paper.Point(x2, y2)]);
+    p.strokeColor = sc; p.strokeWidth = sw; p.fillColor = null;
+  };
+  if (walls.top)    seg(0, 0, W, 0);
+  if (walls.right)  seg(W, 0, W, H);
+  if (walls.bottom) seg(0, H, W, H);
+  if (walls.left)   seg(0, 0, 0, H);
 }
 
 function fullRedraw() {
   paper.project.clear();
-  paperLs = {};
-  if (App.showGrid) { new paper.Layer(); drawBorder(); }
+  paperLs = {}; borderPaperLayer = null;
+  if (App.showGrid) { borderPaperLayer = new paper.Layer(); drawBorder(); }
   layers.forEach(layer => {
     const pl = new paper.Layer();
     pl.visible    = layer.visible;
@@ -610,14 +635,21 @@ function refresh3DLines() {
   three.linesGroup = group;
   three.scene.add(group);
 
-  // Collect all visible Paper.js paths by walking our own layer map
+  // Collect visible paths: border walls first, then pattern paths (skip dashed guides)
   const paths = [];
+  if (App.showGrid && borderPaperLayer) {
+    borderPaperLayer.children.forEach(item => {
+      if (item instanceof paper.Path && item.curves && item.curves.length > 0)
+        paths.push(item);
+    });
+  }
   layers.forEach(layer => {
     if (!layer.visible) return;
     const pl = paperLs[layer.id];
     if (!pl) return;
     pl.children.forEach(item => {
-      if (item instanceof paper.Path && item.curves && item.curves.length > 0)
+      if (item instanceof paper.Path && item.curves && item.curves.length > 0
+          && !(item.dashArray && item.dashArray.length > 0))
         paths.push(item);
     });
   });
@@ -921,8 +953,23 @@ window.addEventListener('DOMContentLoaded', () => {
 
   window.addEventListener('resize', () => { fitCanvas(); resize3D(); });
 
+  const borderOpts = document.getElementById('border-opts');
   document.getElementById('show-grid').addEventListener('change', e => {
-    App.showGrid = e.target.checked; fullRedraw();
+    App.showGrid = e.target.checked;
+    borderOpts.style.display = App.showGrid ? '' : 'none';
+    fullRedraw();
+  });
+
+  [['bw-top','top'],['bw-right','right'],['bw-bottom','bottom'],['bw-left','left']].forEach(([id, wall]) => {
+    document.getElementById(id).addEventListener('change', e => {
+      App.border.walls[wall] = e.target.checked; fullRedraw();
+    });
+  });
+
+  document.getElementById('b-sw').addEventListener('change', e => {
+    App.border.strokeWidth = Math.max(0.1, +e.target.value || 0.5);
+    e.target.value = App.border.strokeWidth;
+    fullRedraw();
   });
 
   document.getElementById('btn-export').addEventListener('click', exportSVG);
