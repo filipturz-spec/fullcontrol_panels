@@ -263,29 +263,53 @@
     return out;
   }
 
-  // ── Extract paths from all visible layers ────────────────────────────────
+  // ── Extract paths at interpolation factor t ──────────────────────────────
+  // t = 0 → back face geometry, t = 1 → front face geometry.
+  // For layers with backParams.amplitude, the amplitude is linearly blended.
+  // Border walls (if App.showGrid) are prepended to every layer's path list.
 
-  function extractPaths() {
+  function extractPathsAt(t) {
     var W_mm = App.panelW * CM;
     var H_mm = App.panelH * CM;
     var all  = [];
+
+    // Border walls — printed on every Z layer as the structural frame.
+    if (App.showGrid && App.border) {
+      var walls = App.border.walls || {};
+      if (walls.top)    all.push([{ x: 0,    y: 0     }, { x: W_mm, y: 0     }]);
+      if (walls.right)  all.push([{ x: W_mm, y: 0     }, { x: W_mm, y: H_mm  }]);
+      if (walls.left)   all.push([{ x: 0,    y: 0     }, { x: 0,    y: H_mm  }]);
+      if (walls.bottom) all.push([{ x: 0,    y: H_mm  }, { x: W_mm, y: H_mm  }]);
+    }
 
     for (var i = 0; i < layers.length; i++) {
       var layer = layers[i];
       if (!layer.visible) continue;
 
-      var p         = layer.params;
+      var p  = layer.params;
+      var bp = layer.backParams || {};
+
+      // Blend amplitude: t=0 → back amplitude, t=1 → front amplitude.
+      // Only sine and square carry backParams.amplitude; others are unchanged.
+      var blended = p;
+      if (bp.amplitude !== undefined && p.amplitude !== undefined
+          && bp.amplitude !== p.amplitude) {
+        blended = {};
+        for (var key in p) if (Object.prototype.hasOwnProperty.call(p, key)) blended[key] = p[key];
+        blended.amplitude = bp.amplitude + (p.amplitude - bp.amplitude) * t;
+      }
+
       var segW      = W_mm / layer.segments;
       var sw        = layer.style ? layer.style.strokeWidth : 0.3;
       var basePaths = [];
 
       switch (layer.gen) {
-        case 'straight': basePaths = [rawStraight(p, segW, H_mm)];        break;
-        case 'sine':     basePaths = [rawSine(p, segW, H_mm)];             break;
-        case 'bezier':   basePaths = [rawBezier(p, segW, H_mm)];           break;
-        case 'arch':     basePaths = [rawArch(p, segW, H_mm, sw)];         break;
-        case 'square':   basePaths = [rawSquare(p, segW, H_mm)];           break;
-        case 'circle':   basePaths = rawCirclePaths(p, segW, H_mm);        break;
+        case 'straight': basePaths = [rawStraight(blended, segW, H_mm)];        break;
+        case 'sine':     basePaths = [rawSine(blended, segW, H_mm)];             break;
+        case 'bezier':   basePaths = [rawBezier(blended, segW, H_mm)];           break;
+        case 'arch':     basePaths = [rawArch(blended, segW, H_mm, sw)];         break;
+        case 'square':   basePaths = [rawSquare(blended, segW, H_mm)];           break;
+        case 'circle':   basePaths = rawCirclePaths(blended, segW, H_mm);        break;
       }
 
       var stamped = stampPaths(basePaths, layer, W_mm, H_mm);
@@ -325,8 +349,10 @@
   }
 
   // ── GCode builder ────────────────────────────────────────────────────────
+  // Paths are re-extracted and re-sorted for each print layer so that
+  // the amplitude interpolation (back → front) is baked per Z height.
 
-  function buildGCode(sorted, cfg) {
+  function buildGCode(cfg) {
     var H_mm      = App.panelH * CM;
     var numLayers = Math.max(1, Math.round(cfg.depth / cfg.layerH));
     var eRate     = cfg.extMult;
@@ -361,6 +387,11 @@
 
     var E = 0;
     for (var layer = 0; layer < numLayers; layer++) {
+      // t=0 → back face (first/bottom layer), t=1 → front face (last/top layer)
+      var t      = numLayers <= 1 ? 1 : layer / (numLayers - 1);
+      var paths  = extractPathsAt(t);
+      var sorted = sortPaths(paths);
+
       var z = f3((layer + 1) * cfg.layerH);
       out.push('; --- Layer ' + (layer + 1) + '/' + numLayers + '  Z=' + z + ' ---');
       out.push('G0 Z' + z);
@@ -416,13 +447,15 @@
         endG:    gv('fab-end'),
       };
 
-      if (!layers.some(function (l) { return l.visible; })) {
+      var hasBorder = App.showGrid && App.border &&
+        (App.border.walls.top || App.border.walls.right ||
+         App.border.walls.bottom || App.border.walls.left);
+
+      if (!hasBorder && !layers.some(function (l) { return l.visible; })) {
         alert('No visible layers to export.'); return;
       }
 
-      var paths  = extractPaths();
-      var sorted = sortPaths(paths);
-      var gcode  = buildGCode(sorted, cfg);
+      var gcode = buildGCode(cfg);
       download('partition-screen.gcode', gcode, 'text/plain');
     } catch (err) {
       alert('GCode export failed:\n' + err.message);
