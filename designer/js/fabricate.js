@@ -263,10 +263,29 @@
     return out;
   }
 
+  // ── Warp transform (mirrors applyWarp() in index.html) ──────────────────
+  // Displacement: dy = A_mm * sin(π * x / W_mm) * (y / H_mm)
+  // Top edge (y=0) is pinned; displacement grows toward the bottom.
+  // Positive warpAmount bows the bottom edge downward (outward in Paper.js).
+
+  function applyWarpToPaths(all, W_mm, H_mm) {
+    var A = (App.warpAmount || 0) * CM;
+    if (!A) return all;
+    return all.map(function (path) {
+      return path.map(function (pt) {
+        return {
+          x: pt.x,
+          y: pt.y + A * Math.sin(Math.PI * pt.x / W_mm) * (pt.y / H_mm),
+        };
+      });
+    });
+  }
+
   // ── Extract paths at interpolation factor t ──────────────────────────────
   // t = 0 → back face geometry, t = 1 → front face geometry.
   // For layers with backParams.amplitude, the amplitude is linearly blended.
   // Border walls (if App.showGrid) are prepended to every layer's path list.
+  // Warp deformation is applied to all paths before returning.
 
   function extractPathsAt(t) {
     var W_mm = App.panelW * CM;
@@ -274,12 +293,17 @@
     var all  = [];
 
     // Border walls — printed on every Z layer as the structural frame.
+    // Bottom wall uses 32 intermediate points so the warp curves it smoothly.
     if (App.showGrid && App.border) {
       var walls = App.border.walls || {};
-      if (walls.top)    all.push([{ x: 0,    y: 0     }, { x: W_mm, y: 0     }]);
-      if (walls.right)  all.push([{ x: W_mm, y: 0     }, { x: W_mm, y: H_mm  }]);
-      if (walls.left)   all.push([{ x: 0,    y: 0     }, { x: 0,    y: H_mm  }]);
-      if (walls.bottom) all.push([{ x: 0,    y: H_mm  }, { x: W_mm, y: H_mm  }]);
+      if (walls.top)   all.push([{ x: 0,    y: 0    }, { x: W_mm, y: 0    }]);
+      if (walls.right) all.push([{ x: W_mm, y: 0    }, { x: W_mm, y: H_mm }]);
+      if (walls.left)  all.push([{ x: 0,    y: 0    }, { x: 0,    y: H_mm }]);
+      if (walls.bottom) {
+        var N = 32, bpts = [];
+        for (var wi = 0; wi <= N; wi++) bpts.push({ x: W_mm * wi / N, y: H_mm });
+        all.push(bpts);
+      }
     }
 
     for (var i = 0; i < layers.length; i++) {
@@ -317,7 +341,8 @@
         if (stamped[j].length >= 2) all.push(stamped[j]);
       }
     }
-    return all;
+
+    return applyWarpToPaths(all, W_mm, H_mm);
   }
 
   // ── Greedy nearest-endpoint path sort ────────────────────────────────────
