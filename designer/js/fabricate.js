@@ -1,435 +1,433 @@
 /**
  * fabricate.js — GCode export for Partition Screen Designer
  *
- * Reads App and layers from the shared global scope (set by index.html).
- * All other helpers are defined locally — no other global dependencies.
+ * Wrapped in an IIFE so all internal const/let/function declarations are
+ * local and cannot collide with anything in index.html's global scope.
+ * Only window.exportGCode is exposed.
  *
- * All output coordinates are in mm.
- * App params (amplitude, cycleH, depth, etc.) are in cm → ×10 for mm.
+ * Reads App and layers from the global scope set by index.html.
+ * All output coordinates are in mm (App params are in cm, ×10).
  */
-'use strict';
+(function () {
+  'use strict';
 
-const _CM = 10; // cm → mm
+  var CM = 10; // cm → mm
 
-// ── Local download helper (no dependency on index.html's dl()) ────────────
+  // ── Download helper ──────────────────────────────────────────────────────
 
-function _download(name, text, mime) {
-  const a = document.createElement('a');
-  a.href     = URL.createObjectURL(new Blob([text], { type: mime }));
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(a.href);
-}
+  function download(name, text, mime) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: mime }));
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+  }
 
-// ── Local bunchY (mirrors index.html, no global dependency) ──────────────
+  // ── bunchY (mirrors index.html) ──────────────────────────────────────────
 
-function _bunchY(t, k) {
-  if (k <= 0) return t;
-  return (Math.exp(k * t) - 1) / (Math.exp(k) - 1);
-}
+  function bunchY(t, k) {
+    if (k <= 0) return t;
+    return (Math.exp(k * t) - 1) / (Math.exp(k) - 1);
+  }
 
-// ── Bezier samplers ───────────────────────────────────────────────────────
+  // ── Bezier samplers ──────────────────────────────────────────────────────
 
-function _cubicBez(t, p0, p1, p2, p3) {
-  const u = 1 - t;
-  return {
-    x: u*u*u*p0.x + 3*u*u*t*p1.x + 3*u*t*t*p2.x + t*t*t*p3.x,
-    y: u*u*u*p0.y + 3*u*u*t*p1.y + 3*u*t*t*p2.y + t*t*t*p3.y,
-  };
-}
+  function cubicBez(t, p0, p1, p2, p3) {
+    var u = 1 - t;
+    return {
+      x: u*u*u*p0.x + 3*u*u*t*p1.x + 3*u*t*t*p2.x + t*t*t*p3.x,
+      y: u*u*u*p0.y + 3*u*u*t*p1.y + 3*u*t*t*p2.y + t*t*t*p3.y,
+    };
+  }
 
-function _quadBez(t, p0, p1, p2) {
-  const u = 1 - t;
-  return {
-    x: u*u*p0.x + 2*u*t*p1.x + t*t*p2.x,
-    y: u*u*p0.y + 2*u*t*p1.y + t*t*p2.y,
-  };
-}
+  function quadBez(t, p0, p1, p2) {
+    var u = 1 - t;
+    return {
+      x: u*u*p0.x + 2*u*t*p1.x + t*t*p2.x,
+      y: u*u*p0.y + 2*u*t*p1.y + t*t*p2.y,
+    };
+  }
 
-// ── Raw geometry generators ───────────────────────────────────────────────
-// Each returns [{x, y}, ...] relative to segment centre (x=0).
-// Coordinates in mm. segW and H in mm.
-// These mirror the Paper.js generators in index.html exactly.
+  // ── Raw geometry generators ──────────────────────────────────────────────
+  // Each returns [{x,y},...] relative to segment centre (x=0), coords in mm.
 
-function _rawStraight(_p, _segW, H) {
-  return [{ x: 0, y: 0 }, { x: 0, y: H }];
-}
+  function rawStraight(_p, _segW, H) {
+    return [{ x: 0, y: 0 }, { x: 0, y: H }];
+  }
 
-function _rawSine(p, segW, H) {
-  const amp     = p.amplitude * _CM;
-  const halfSeg = segW / 2;
-  const cycleH  = p.cycleH * _CM;
-  const maxCyc  = Math.floor(H / cycleH);
-  if (maxCyc < 1) return [];
-  const nCyc   = (p.visibleCycles > 0) ? Math.min(maxCyc, p.visibleCycles) : maxCyc;
-  const totalH = nCyc * cycleH;
-  const k      = (p.bunch || 0) * 5;
-  const phase  = p.startPhase === 'peak'   ?  Math.PI / 2
+  function rawSine(p, segW, H) {
+    var amp     = p.amplitude * CM;
+    var halfSeg = segW / 2;
+    var cycleH  = p.cycleH * CM;
+    var maxCyc  = Math.floor(H / cycleH);
+    if (maxCyc < 1) return [];
+    var nCyc   = (p.visibleCycles > 0) ? Math.min(maxCyc, p.visibleCycles) : maxCyc;
+    var totalH = nCyc * cycleH;
+    var k      = (p.bunch || 0) * 5;
+    var phase  = p.startPhase === 'peak'   ?  Math.PI / 2
                : p.startPhase === 'valley' ? -Math.PI / 2 : 0;
-  const N  = Math.max(60, nCyc * 40);
-  const pts = [];
-  for (let s = 0; s <= N; s++) {
-    const t = s / N;
-    const x = Math.max(-halfSeg, Math.min(halfSeg,
+    var N   = Math.max(60, nCyc * 40);
+    var pts = [];
+    for (var s = 0; s <= N; s++) {
+      var t = s / N;
+      var x = Math.max(-halfSeg, Math.min(halfSeg,
                 amp * Math.sin(2 * Math.PI * nCyc * t + phase)));
-    pts.push({ x, y: _bunchY(t, k) * totalH });
-  }
-  return pts;
-}
-
-function _rawBezier(p, segW, H) {
-  const amp    = Math.min(p.amplitude * _CM, segW / 2);
-  const cycleH = p.cycleH * _CM;
-  const maxCyc = Math.floor(H / cycleH);
-  if (maxCyc < 1) return [];
-  const nCyc   = (p.visibleCycles > 0) ? Math.min(maxCyc, p.visibleCycles) : maxCyc;
-  const totalH = nCyc * cycleH;
-  const k      = (p.bunch || 0) * 5;
-  const cpX    = (4 / 3) * amp;
-  const N      = 20; // samples per cycle
-  const pts    = [];
-
-  if (p.startPhase === 'center') {
-    pts.push({ x: 0, y: 0 });
-    for (let c = 0; c < nCyc; c++) {
-      const dir = c % 2 === 0 ? 1 : -1;
-      const y0  = _bunchY(c / nCyc, k) * totalH;
-      const y1  = _bunchY((c + 1) / nCyc, k) * totalH;
-      const hv  = ((y1 - y0) / 2) * (p.sharpness || 0);
-      for (let s = 1; s <= N; s++) {
-        pts.push(_cubicBez(s / N,
-          { x: 0,        y: y0      },
-          { x: cpX*dir,  y: y0 + hv },
-          { x: cpX*dir,  y: y1 - hv },
-          { x: 0,        y: y1      }));
-      }
+      pts.push({ x: x, y: bunchY(t, k) * totalH });
     }
-  } else {
-    const startX = (p.startPhase === 'peak') ? amp : -amp;
-    pts.push({ x: startX, y: 0 });
-    for (let c = 0; c < nCyc; c++) {
-      const y0    = _bunchY(c / nCyc, k) * totalH;
-      const y1    = _bunchY((c + 1) / nCyc, k) * totalH;
-      const cpY   = (y1 - y0) / 3;
-      const fromX = c % 2 === 0 ? startX : -startX;
-      const toX   = -fromX;
-      for (let s = 1; s <= N; s++) {
-        pts.push(_cubicBez(s / N,
-          { x: fromX, y: y0        },
-          { x: fromX, y: y0 + cpY  },
-          { x: toX,   y: y1 - cpY  },
-          { x: toX,   y: y1        }));
+    return pts;
+  }
+
+  function rawBezier(p, segW, H) {
+    var amp    = Math.min(p.amplitude * CM, segW / 2);
+    var cycleH = p.cycleH * CM;
+    var maxCyc = Math.floor(H / cycleH);
+    if (maxCyc < 1) return [];
+    var nCyc   = (p.visibleCycles > 0) ? Math.min(maxCyc, p.visibleCycles) : maxCyc;
+    var totalH = nCyc * cycleH;
+    var k      = (p.bunch || 0) * 5;
+    var cpX    = (4 / 3) * amp;
+    var N      = 20;
+    var pts    = [];
+
+    if (p.startPhase === 'center') {
+      pts.push({ x: 0, y: 0 });
+      for (var c = 0; c < nCyc; c++) {
+        var dir = c % 2 === 0 ? 1 : -1;
+        var y0  = bunchY(c / nCyc, k) * totalH;
+        var y1  = bunchY((c + 1) / nCyc, k) * totalH;
+        var hv  = ((y1 - y0) / 2) * (p.sharpness || 0);
+        for (var s = 1; s <= N; s++) {
+          pts.push(cubicBez(s / N,
+            { x: 0,        y: y0      },
+            { x: cpX*dir,  y: y0 + hv },
+            { x: cpX*dir,  y: y1 - hv },
+            { x: 0,        y: y1      }));
+        }
       }
-    }
-  }
-  return pts;
-}
-
-function _rawArch(p, segW, H, strokeWidthCm) {
-  const halfW  = segW / 2;
-  const halfSW = (strokeWidthCm * _CM) / 2;
-  const hit_y  = Math.min(p.depth * _CM, H - 1);
-  const y_cp   = (p.sharpness || 0) * hit_y;
-  const xLand  = -halfW + halfSW + (p.inset || 0) * _CM;
-  const N      = 30;
-  const pts    = [];
-  for (let s = 0; s <= N; s++) {
-    pts.push(_quadBez(s / N,
-      { x: halfW, y: 0     },
-      { x: xLand, y: y_cp  },
-      { x: xLand, y: hit_y }));
-  }
-  pts.push({ x: xLand, y: H });
-  return pts;
-}
-
-function _rawSquare(p, segW, H) {
-  const amp    = Math.min(p.amplitude * _CM, segW / 2);
-  const cycleH = p.cycleH * _CM;
-  const maxCyc = Math.floor(H / cycleH);
-  if (maxCyc < 1) return [];
-  const nCyc   = (p.visibleCycles > 0) ? Math.min(maxCyc, p.visibleCycles) : maxCyc;
-  const totalH = nCyc * cycleH;
-  const k      = (p.bunch || 0) * 5;
-  const K      = 0.5523; // bezier quarter-circle factor
-  const NA     = 8;      // arc samples per corner
-  const pts    = [{ x: amp, y: 0 }];
-
-  function corner(p0, cp0, cp1, p1) {
-    for (let s = 1; s <= NA; s++) pts.push(_cubicBez(s / NA, p0, cp0, cp1, p1));
-  }
-
-  for (let c = 0; c < nCyc; c++) {
-    const y0    = _bunchY(c / nCyc, k) * totalH;
-    const y1    = _bunchY((c + 1) / nCyc, k) * totalH;
-    const yM    = (y0 + y1) / 2;
-    const halfH = (y1 - y0) / 2;
-    const r     = Math.min((p.cornerRadius || 0) * _CM, halfH * 0.45, amp * 0.9);
-    const last  = c === nCyc - 1;
-
-    if (r <= 0) {
-      pts.push({ x:  amp, y: yM });
-      pts.push({ x: -amp, y: yM });
-      pts.push({ x: -amp, y: y1 });
-      if (!last) pts.push({ x: amp, y: y1 });
     } else {
-      pts.push({ x: amp, y: yM - r });
-      corner(
-        { x: amp,       y: yM - r         },
-        { x: amp,       y: yM - r + K * r },
-        { x: amp - K*r, y: yM             },
-        { x: amp - r,   y: yM             }
-      );
-      pts.push({ x: -amp + r, y: yM });
-      corner(
-        { x: -amp + r,       y: yM         },
-        { x: -amp + r - K*r, y: yM         },
-        { x: -amp,           y: yM + K * r },
-        { x: -amp,           y: yM + r     }
-      );
-      if (!last) {
-        pts.push({ x: -amp, y: y1 - r });
-        corner(
-          { x: -amp,       y: y1 - r         },
-          { x: -amp,       y: y1 - r + K * r },
-          { x: -amp + K*r, y: y1             },
-          { x: -amp + r,   y: y1             }
-        );
-        pts.push({ x: amp - r, y: y1 });
-        corner(
-          { x: amp - r,       y: y1         },
-          { x: amp - r + K*r, y: y1         },
-          { x: amp,           y: y1 + K * r },
-          { x: amp,           y: y1 + r     }
-        );
-      } else {
+      var startX = (p.startPhase === 'peak') ? amp : -amp;
+      pts.push({ x: startX, y: 0 });
+      for (var c = 0; c < nCyc; c++) {
+        var y0    = bunchY(c / nCyc, k) * totalH;
+        var y1    = bunchY((c + 1) / nCyc, k) * totalH;
+        var cpY   = (y1 - y0) / 3;
+        var fromX = c % 2 === 0 ? startX : -startX;
+        var toX   = -fromX;
+        for (var s = 1; s <= N; s++) {
+          pts.push(cubicBez(s / N,
+            { x: fromX, y: y0        },
+            { x: fromX, y: y0 + cpY  },
+            { x: toX,   y: y1 - cpY  },
+            { x: toX,   y: y1        }));
+        }
+      }
+    }
+    return pts;
+  }
+
+  function rawArch(p, segW, H, strokeWidthCm) {
+    var halfW  = segW / 2;
+    var halfSW = (strokeWidthCm * CM) / 2;
+    var hit_y  = Math.min(p.depth * CM, H - 1);
+    var y_cp   = (p.sharpness || 0) * hit_y;
+    var xLand  = -halfW + halfSW + (p.inset || 0) * CM;
+    var N      = 30;
+    var pts    = [];
+    for (var s = 0; s <= N; s++) {
+      pts.push(quadBez(s / N,
+        { x: halfW, y: 0     },
+        { x: xLand, y: y_cp  },
+        { x: xLand, y: hit_y }));
+    }
+    pts.push({ x: xLand, y: H });
+    return pts;
+  }
+
+  function rawSquare(p, segW, H) {
+    var amp    = Math.min(p.amplitude * CM, segW / 2);
+    var cycleH = p.cycleH * CM;
+    var maxCyc = Math.floor(H / cycleH);
+    if (maxCyc < 1) return [];
+    var nCyc   = (p.visibleCycles > 0) ? Math.min(maxCyc, p.visibleCycles) : maxCyc;
+    var totalH = nCyc * cycleH;
+    var k      = (p.bunch || 0) * 5;
+    var K      = 0.5523;
+    var NA     = 8;
+    var pts    = [{ x: amp, y: 0 }];
+
+    function corner(p0, cp0, cp1, p1) {
+      for (var s = 1; s <= NA; s++) pts.push(cubicBez(s / NA, p0, cp0, cp1, p1));
+    }
+
+    for (var c = 0; c < nCyc; c++) {
+      var y0    = bunchY(c / nCyc, k) * totalH;
+      var y1    = bunchY((c + 1) / nCyc, k) * totalH;
+      var yM    = (y0 + y1) / 2;
+      var halfH = (y1 - y0) / 2;
+      var r     = Math.min((p.cornerRadius || 0) * CM, halfH * 0.45, amp * 0.9);
+      var last  = c === nCyc - 1;
+
+      if (r <= 0) {
+        pts.push({ x:  amp, y: yM });
+        pts.push({ x: -amp, y: yM });
         pts.push({ x: -amp, y: y1 });
+        if (!last) pts.push({ x: amp, y: y1 });
+      } else {
+        pts.push({ x: amp, y: yM - r });
+        corner(
+          { x: amp,       y: yM - r         },
+          { x: amp,       y: yM - r + K * r },
+          { x: amp - K*r, y: yM             },
+          { x: amp - r,   y: yM             }
+        );
+        pts.push({ x: -amp + r, y: yM });
+        corner(
+          { x: -amp + r,       y: yM         },
+          { x: -amp + r - K*r, y: yM         },
+          { x: -amp,           y: yM + K * r },
+          { x: -amp,           y: yM + r     }
+        );
+        if (!last) {
+          pts.push({ x: -amp, y: y1 - r });
+          corner(
+            { x: -amp,       y: y1 - r         },
+            { x: -amp,       y: y1 - r + K * r },
+            { x: -amp + K*r, y: y1             },
+            { x: -amp + r,   y: y1             }
+          );
+          pts.push({ x: amp - r, y: y1 });
+          corner(
+            { x: amp - r,       y: y1         },
+            { x: amp - r + K*r, y: y1         },
+            { x: amp,           y: y1 + K * r },
+            { x: amp,           y: y1 + r     }
+          );
+        } else {
+          pts.push({ x: -amp, y: y1 });
+        }
       }
     }
+    return pts;
   }
-  return pts;
-}
 
-// Circle returns an array of paths (1 full circle, or 2 arcs if overflowing)
-function _rawCirclePaths(p, segW, H) {
-  const cy    = (p.yPos / 100) * H;
-  const r     = p.diameter * _CM / 2;
-  const halfW = segW / 2;
-  if (r <= 0) return [];
+  function rawCirclePaths(p, segW, H) {
+    var cy    = (p.yPos / 100) * H;
+    var r     = p.diameter * CM / 2;
+    var halfW = segW / 2;
+    if (r <= 0) return [];
 
-  if (r <= halfW) {
-    const N = 64;
-    const pts = [];
-    for (let t = 0; t <= N; t++) {
-      const θ = (t / N) * 2 * Math.PI;
-      pts.push({ x: r * Math.cos(θ), y: cy + r * Math.sin(θ) });
+    if (r <= halfW) {
+      var N = 64, pts = [];
+      for (var i = 0; i <= N; i++) {
+        var ang = (i / N) * 2 * Math.PI;
+        pts.push({ x: r * Math.cos(ang), y: cy + r * Math.sin(ang) });
+      }
+      return [pts];
+    } else {
+      var alpha = Math.acos(halfW / r);
+      var N = 40, topPts = [], botPts = [];
+      for (var i = 0; i <= N; i++) {
+        var ang = (alpha - Math.PI) + (i / N) * (Math.PI - 2 * alpha);
+        topPts.push({ x: r * Math.cos(ang), y: cy + r * Math.sin(ang) });
+      }
+      for (var i = 0; i <= N; i++) {
+        var ang = alpha + (i / N) * (Math.PI - 2 * alpha);
+        botPts.push({ x: r * Math.cos(ang), y: cy + r * Math.sin(ang) });
+      }
+      return [topPts, botPts];
     }
-    return [pts];
-  } else {
-    const α = Math.acos(halfW / r);
-    const N = 40;
-    const topPts = [], botPts = [];
-    for (let t = 0; t <= N; t++) {
-      const θ = (α - Math.PI) + (t / N) * (Math.PI - 2 * α);
-      topPts.push({ x: r * Math.cos(θ), y: cy + r * Math.sin(θ) });
-    }
-    for (let t = 0; t <= N; t++) {
-      const θ = α + (t / N) * (Math.PI - 2 * α);
-      botPts.push({ x: r * Math.cos(θ), y: cy + r * Math.sin(θ) });
-    }
-    return [topPts, botPts];
   }
-}
 
-// ── Segment stamping ──────────────────────────────────────────────────────
-// Translates base paths (centred at x=0) into absolute mm coordinates
-// for each segment, applying LRLR/RRRR mirroring and flipV.
+  // ── Segment stamping ─────────────────────────────────────────────────────
 
-function _stampPaths(basePaths, layer, W_mm, H_mm) {
-  const n    = layer.segments;
-  const segW = W_mm / n;
-  const out  = [];
-
-  for (let i = 0; i < n; i++) {
-    const cx   = (i + 0.5) * segW;
-    const flip = layer.direction === 'RRRR' ||
+  function stampPaths(basePaths, layer, W_mm, H_mm) {
+    var n    = layer.segments;
+    var segW = W_mm / n;
+    var out  = [];
+    for (var i = 0; i < n; i++) {
+      var cx   = (i + 0.5) * segW;
+      var flip = layer.direction === 'RRRR' ||
                  (layer.direction === 'LRLR' && i % 2 === 1);
-    for (const base of basePaths) {
-      out.push(base.map(pt => ({
-        x: cx + (flip ? -pt.x : pt.x),
-        y: layer.flipV ? H_mm - pt.y : pt.y,
-      })));
-    }
-  }
-  return out;
-}
-
-// ── Collect paths from all visible layers ─────────────────────────────────
-
-function _extractPaths() {
-  const W_mm = App.panelW * _CM;
-  const H_mm = App.panelH * _CM;
-  const all  = [];
-
-  for (const layer of layers) {
-    if (!layer.visible) continue;
-
-    // Use front params for GCode (back face at Z=0 would need separate pass)
-    const p    = layer.params;
-    const segW = W_mm / layer.segments;
-    const sw   = layer.style ? layer.style.strokeWidth : 0.3;
-    let basePaths = [];
-
-    switch (layer.gen) {
-      case 'straight': basePaths = [_rawStraight(p, segW, H_mm)];               break;
-      case 'sine':     basePaths = [_rawSine(p, segW, H_mm)];                    break;
-      case 'bezier':   basePaths = [_rawBezier(p, segW, H_mm)];                  break;
-      case 'arch':     basePaths = [_rawArch(p, segW, H_mm, sw)];                break;
-      case 'square':   basePaths = [_rawSquare(p, segW, H_mm)];                  break;
-      case 'circle':   basePaths = _rawCirclePaths(p, segW, H_mm);               break;
-    }
-
-    const stamped = _stampPaths(basePaths, layer, W_mm, H_mm);
-    all.push(...stamped.filter(pts => pts.length >= 2));
-  }
-  return all;
-}
-
-// ── Greedy nearest-endpoint path sort ────────────────────────────────────
-
-function _sortPaths(paths) {
-  if (paths.length === 0) return [];
-  const used   = new Array(paths.length).fill(false);
-  const sorted = [];
-  let cx = 0, cy = 0;
-
-  for (let n = 0; n < paths.length; n++) {
-    let bestI = -1, bestD = Infinity, bestRev = false;
-    for (let i = 0; i < paths.length; i++) {
-      if (used[i]) continue;
-      const s = paths[i][0];
-      const e = paths[i][paths[i].length - 1];
-      const ds = (s.x - cx) ** 2 + (s.y - cy) ** 2;
-      const de = (e.x - cx) ** 2 + (e.y - cy) ** 2;
-      if (ds < bestD) { bestD = ds; bestI = i; bestRev = false; }
-      if (de < bestD) { bestD = de; bestI = i; bestRev = true;  }
-    }
-    used[bestI] = true;
-    const pts = bestRev ? [...paths[bestI]].reverse() : paths[bestI];
-    sorted.push(pts);
-    const last = pts[pts.length - 1];
-    cx = last.x; cy = last.y;
-  }
-  return sorted;
-}
-
-// ── GCode builder ─────────────────────────────────────────────────────────
-
-function _buildGCode(sorted, cfg) {
-  const H_mm      = App.panelH * _CM;
-  const numLayers = Math.max(1, Math.round(cfg.depth / cfg.layerH));
-  const eRate     = cfg.extMult;               // E units per mm of travel
-  const f3        = v => v.toFixed(3);
-  const fMin      = v => Math.round(v * 60);  // mm/s → mm/min
-
-  const out = [];
-  out.push(
-    '; ================================================',
-    `; Partition Screen — GCode`,
-    `; Panel ${App.panelW}×${App.panelH} cm   Depth ${cfg.depth} mm`,
-    `; ${numLayers} layers × ${cfg.layerH} mm   Line width ${cfg.lineW} mm`,
-    `; Nozzle ${cfg.nozzleT} °C   Bed ${cfg.bedT} °C`,
-    `; Print ${cfg.printV} mm/s   Travel ${cfg.travelV} mm/s   E×${cfg.extMult}`,
-    '; ================================================',
-    '',
-  );
-
-  if (cfg.startG.trim()) {
-    out.push(cfg.startG.trim(), '');
-  } else {
-    out.push(
-      `M104 S${cfg.nozzleT}`,
-      `M140 S${cfg.bedT}`,
-      `M109 S${cfg.nozzleT}`,
-      `M190 S${cfg.bedT}`,
-      `G28`,
-      `G92 E0`,
-      `G90`,
-      `M82`,
-      '',
-    );
-  }
-
-  out.push(`G0 F${fMin(cfg.travelV)} Z${f3(cfg.layerH)}`, '');
-
-  let E = 0;
-  for (let layer = 0; layer < numLayers; layer++) {
-    const z = f3((layer + 1) * cfg.layerH);
-    out.push(`; --- Layer ${layer + 1}/${numLayers}  Z=${z} ---`);
-    out.push(`G0 Z${z}`);
-
-    let cx = 0, cy = 0;
-    for (const pts of sorted) {
-      const s0 = pts[0];
-      // Flip Y: canvas Y=0 is top; printer Y=0 is front (bottom of panel)
-      const gy0 = H_mm - s0.y;
-      out.push(`G0 F${fMin(cfg.travelV)} X${f3(s0.x)} Y${f3(gy0)}`);
-      out.push(`G1 F${fMin(cfg.printV)}`);
-      cx = s0.x; cy = s0.y;
-
-      for (let i = 1; i < pts.length; i++) {
-        const pt  = pts[i];
-        const gy  = H_mm - pt.y;
-        const dx  = pt.x - cx;
-        const dy  = gy - (H_mm - cy);
-        E += Math.sqrt(dx * dx + dy * dy) * eRate;
-        out.push(`G1 X${f3(pt.x)} Y${f3(gy)} E${f3(E)}`);
-        cx = pt.x; cy = pt.y;
+      for (var b = 0; b < basePaths.length; b++) {
+        var base = basePaths[b];
+        out.push(base.map(function (pt) {
+          return {
+            x: cx + (flip ? -pt.x : pt.x),
+            y: layer.flipV ? H_mm - pt.y : pt.y,
+          };
+        }));
       }
     }
-    out.push('');
+    return out;
   }
 
-  if (cfg.endG.trim()) {
-    out.push(cfg.endG.trim());
-  } else {
-    out.push(`M104 S0`, `M140 S0`, `G28 X Y`, `M84`);
+  // ── Extract paths from all visible layers ────────────────────────────────
+
+  function extractPaths() {
+    var W_mm = App.panelW * CM;
+    var H_mm = App.panelH * CM;
+    var all  = [];
+
+    for (var i = 0; i < layers.length; i++) {
+      var layer = layers[i];
+      if (!layer.visible) continue;
+
+      var p         = layer.params;
+      var segW      = W_mm / layer.segments;
+      var sw        = layer.style ? layer.style.strokeWidth : 0.3;
+      var basePaths = [];
+
+      switch (layer.gen) {
+        case 'straight': basePaths = [rawStraight(p, segW, H_mm)];        break;
+        case 'sine':     basePaths = [rawSine(p, segW, H_mm)];             break;
+        case 'bezier':   basePaths = [rawBezier(p, segW, H_mm)];           break;
+        case 'arch':     basePaths = [rawArch(p, segW, H_mm, sw)];         break;
+        case 'square':   basePaths = [rawSquare(p, segW, H_mm)];           break;
+        case 'circle':   basePaths = rawCirclePaths(p, segW, H_mm);        break;
+      }
+
+      var stamped = stampPaths(basePaths, layer, W_mm, H_mm);
+      for (var j = 0; j < stamped.length; j++) {
+        if (stamped[j].length >= 2) all.push(stamped[j]);
+      }
+    }
+    return all;
   }
 
-  return out.join('\n');
-}
+  // ── Greedy nearest-endpoint path sort ────────────────────────────────────
 
-// ── Public entry point ────────────────────────────────────────────────────
+  function sortPaths(paths) {
+    if (paths.length === 0) return [];
+    var used   = new Array(paths.length).fill(false);
+    var sorted = [];
+    var cx = 0, cy = 0;
 
-function exportGCode() {
-  const gv  = id => document.getElementById(id).value;
-  const gn  = id => parseFloat(gv(id)) || 0;
+    for (var n = 0; n < paths.length; n++) {
+      var bestI = -1, bestD = Infinity, bestRev = false;
+      for (var i = 0; i < paths.length; i++) {
+        if (used[i]) continue;
+        var s  = paths[i][0];
+        var e  = paths[i][paths[i].length - 1];
+        var ds = (s.x - cx) * (s.x - cx) + (s.y - cy) * (s.y - cy);
+        var de = (e.x - cx) * (e.x - cx) + (e.y - cy) * (e.y - cy);
+        if (ds < bestD) { bestD = ds; bestI = i; bestRev = false; }
+        if (de < bestD) { bestD = de; bestI = i; bestRev = true;  }
+      }
+      used[bestI] = true;
+      var pts = bestRev ? paths[bestI].slice().reverse() : paths[bestI];
+      sorted.push(pts);
+      var last = pts[pts.length - 1];
+      cx = last.x; cy = last.y;
+    }
+    return sorted;
+  }
 
-  const cfg = {
-    depth:   gn('fab-depth'),
-    layerH:  gn('fab-lh'),
-    lineW:   gn('fab-lw'),
-    printV:  gn('fab-ps'),
-    travelV: gn('fab-ts'),
-    nozzleT: gn('fab-nt'),
-    bedT:    gn('fab-bt'),
-    extMult: gn('fab-em'),
-    startG:  gv('fab-start'),
-    endG:    gv('fab-end'),
+  // ── GCode builder ────────────────────────────────────────────────────────
+
+  function buildGCode(sorted, cfg) {
+    var H_mm      = App.panelH * CM;
+    var numLayers = Math.max(1, Math.round(cfg.depth / cfg.layerH));
+    var eRate     = cfg.extMult;
+    var f3        = function (v) { return v.toFixed(3); };
+    var fMin      = function (v) { return Math.round(v * 60); };
+
+    var out = [];
+    out.push(
+      '; ================================================',
+      '; Partition Screen \u2014 GCode',
+      '; Panel ' + App.panelW + '\xD7' + App.panelH + ' cm   Depth ' + cfg.depth + ' mm',
+      '; ' + numLayers + ' layers \xD7 ' + cfg.layerH + ' mm   Line width ' + cfg.lineW + ' mm',
+      '; Nozzle ' + cfg.nozzleT + ' \xB0C   Bed ' + cfg.bedT + ' \xB0C',
+      '; Print ' + cfg.printV + ' mm/s   Travel ' + cfg.travelV + ' mm/s   E\xD7' + cfg.extMult,
+      '; ================================================',
+      ''
+    );
+
+    if (cfg.startG.trim()) {
+      out.push(cfg.startG.trim(), '');
+    } else {
+      out.push(
+        'M104 S' + cfg.nozzleT,
+        'M140 S' + cfg.bedT,
+        'M109 S' + cfg.nozzleT,
+        'M190 S' + cfg.bedT,
+        'G28', 'G92 E0', 'G90', 'M82', ''
+      );
+    }
+
+    out.push('G0 F' + fMin(cfg.travelV) + ' Z' + f3(cfg.layerH), '');
+
+    var E = 0;
+    for (var layer = 0; layer < numLayers; layer++) {
+      var z = f3((layer + 1) * cfg.layerH);
+      out.push('; --- Layer ' + (layer + 1) + '/' + numLayers + '  Z=' + z + ' ---');
+      out.push('G0 Z' + z);
+
+      var cx = 0, cy = 0;
+      for (var pi = 0; pi < sorted.length; pi++) {
+        var pts = sorted[pi];
+        var s0  = pts[0];
+        var gy0 = H_mm - s0.y;
+        out.push('G0 F' + fMin(cfg.travelV) + ' X' + f3(s0.x) + ' Y' + f3(gy0));
+        out.push('G1 F' + fMin(cfg.printV));
+        cx = s0.x; cy = s0.y;
+
+        for (var i = 1; i < pts.length; i++) {
+          var pt  = pts[i];
+          var gy  = H_mm - pt.y;
+          var dx  = pt.x - cx;
+          var dy  = gy - (H_mm - cy);
+          E += Math.sqrt(dx * dx + dy * dy) * eRate;
+          out.push('G1 X' + f3(pt.x) + ' Y' + f3(gy) + ' E' + f3(E));
+          cx = pt.x; cy = pt.y;
+        }
+      }
+      out.push('');
+    }
+
+    if (cfg.endG.trim()) {
+      out.push(cfg.endG.trim());
+    } else {
+      out.push('M104 S0', 'M140 S0', 'G28 X Y', 'M84');
+    }
+
+    return out.join('\n');
+  }
+
+  // ── Public entry point ───────────────────────────────────────────────────
+
+  window.exportGCode = function () {
+    var gv  = function (id) { return document.getElementById(id).value; };
+    var gn  = function (id) { return parseFloat(gv(id)) || 0; };
+
+    try {
+      var cfg = {
+        depth:   gn('fab-depth'),
+        layerH:  gn('fab-lh'),
+        lineW:   gn('fab-lw'),
+        printV:  gn('fab-ps'),
+        travelV: gn('fab-ts'),
+        nozzleT: gn('fab-nt'),
+        bedT:    gn('fab-bt'),
+        extMult: gn('fab-em'),
+        startG:  gv('fab-start'),
+        endG:    gv('fab-end'),
+      };
+
+      if (!layers.some(function (l) { return l.visible; })) {
+        alert('No visible layers to export.'); return;
+      }
+
+      var paths  = extractPaths();
+      var sorted = sortPaths(paths);
+      var gcode  = buildGCode(sorted, cfg);
+      download('partition-screen.gcode', gcode, 'text/plain');
+    } catch (err) {
+      alert('GCode export failed:\n' + err.message);
+      console.error(err);
+    }
   };
 
-  try {
-    if (!layers.some(l => l.visible)) {
-      alert('No visible layers to export.'); return;
-    }
-    const paths  = _extractPaths();
-    const sorted = _sortPaths(paths);
-    const gcode  = _buildGCode(sorted, cfg);
-    _download('partition-screen.gcode', gcode, 'text/plain');
-  } catch (err) {
-    alert('GCode export failed: ' + err.message);
-    console.error(err);
-  }
-}
+}());
