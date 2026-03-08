@@ -1258,7 +1258,6 @@ window.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btn-export').addEventListener('click', exportSVG);
   document.getElementById('btn-save').addEventListener('click', saveJSON);
-  document.getElementById('btn-gcode').addEventListener('click', () => exportGCode());
 
   // Fabricate panel collapse toggle
   document.getElementById('fab-hdr').addEventListener('click', () => {
@@ -1281,5 +1280,18 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 </script>
 <script src="js/fabricate.js"></script>
+<script>
+// DOM is fully ready here and fabricate.js has executed.
+// Register the GCode button handler now rather than inside DOMContentLoaded,
+// which avoids any cross-script timing uncertainty.
+document.getElementById('btn-gcode').addEventListener('click', function () {
+  try {
+    exportGCode();
+  } catch (e) {
+    alert('GCode export error:\n' + e);
+    console.error(e);
+  }
+});
+</script>
 </body>
 </html>
