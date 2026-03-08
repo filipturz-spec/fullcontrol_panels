@@ -1258,7 +1258,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btn-export').addEventListener('click', exportSVG);
   document.getElementById('btn-save').addEventListener('click', saveJSON);
-  document.getElementById('btn-gcode').addEventListener('click', exportGCode);
+  document.getElementById('btn-gcode').addEventListener('click', () => exportGCode());
 
   // Fabricate panel collapse toggle
   document.getElementById('fab-hdr').addEventListener('click', () => {
