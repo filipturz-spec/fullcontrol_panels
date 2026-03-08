@@ -44,16 +44,17 @@ body{background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;font-
 .lcard{margin-bottom:4px;background:var(--sf2);border:1px solid var(--bd);border-radius:var(--r);overflow:hidden}
 .lhead{display:flex;align-items:center;gap:6px;padding:7px 8px;cursor:pointer;user-select:none}
 .lhead:hover{background:rgba(255,255,255,.04)}
-.vis{width:14px;height:14px;border-radius:2px;border:1px solid var(--bd);display:flex;align-items:center;justify-content:center;font-size:9px;cursor:pointer;flex-shrink:0}
-.vis.on{background:var(--ac);border-color:var(--ac);color:#fff}
-.vis.off{color:var(--dm)}
 .badge{font-size:10px;font-weight:700;text-transform:uppercase;color:var(--ac2);background:rgba(124,111,255,.15);padding:1px 5px;border-radius:3px;flex-shrink:0;letter-spacing:.04em}
 .lname{flex:1;font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chev{font-size:9px;color:var(--dm);transition:transform .15s;flex-shrink:0}
 .lcard.open .chev{transform:rotate(90deg)}
-.delbtn,.copybtn{background:none;border:none;color:var(--dm);cursor:pointer;font-size:13px;line-height:1;padding:2px 4px;border-radius:3px;flex-shrink:0}
+.delbtn,.copybtn,.visbtn{background:none;border:none;color:var(--dm);cursor:pointer;font-size:13px;line-height:1;padding:2px 4px;border-radius:3px;flex-shrink:0}
 .delbtn:hover{background:var(--danger);color:#fff}
 .copybtn:hover{background:var(--ac);color:#fff}
+.visbtn{font-size:11px}
+.visbtn.on{color:var(--ac)}
+.visbtn.off{color:var(--bd)}
+.visbtn:hover{background:var(--sf2);color:var(--dm)}
 .lbody{display:none;padding:8px 10px 10px;border-top:1px solid var(--bd)}
 .lcard.open .lbody{display:block}
 
@@ -924,6 +925,7 @@ function toggleVis(id) {
   l.visible = !l.visible;
   if (paperLs[id]) paperLs[id].visible = l.visible;
   paper.view.update();
+  refresh3DLines();
   renderLayers();
 }
 
@@ -987,10 +989,10 @@ function buildCard(layer) {
   const gc = buildGenCtrls(layer);
   return `
     <div class="lhead">
-      <div class="vis ${layer.visible ? 'on' : 'off'}" data-vis>●</div>
       <span class="badge">${m.icon} ${m.label}</span>
       <span class="lname">${layer.name}</span>
       <span class="chev">›</span>
+      <button class="visbtn ${layer.visible ? 'on' : 'off'}" data-vis title="Toggle visibility">◉</button>
       <button class="copybtn" data-copy title="Duplicate layer">⧉</button>
       <button class="delbtn" data-del title="Delete layer">✕</button>
     </div>
@@ -1017,10 +1019,10 @@ function buildBackCard(layer) {
     : `<div class="csec"><span class="back-same">— same as front —</span></div>`;
   return `
     <div class="lhead">
-      <div class="vis ${layer.visible ? 'on' : 'off'}" style="opacity:.45;pointer-events:none">●</div>
       <span class="badge">${m.icon} ${m.label}</span>
       <span class="lname">${layer.name}</span>
       <span class="chev">›</span>
+      <button class="visbtn ${layer.visible ? 'on' : 'off'}" data-vis title="Toggle visibility">◉</button>
     </div>
     <div class="lbody">${ctrl}</div>`;
 }
@@ -1058,7 +1060,10 @@ function wireCard(card, layer) {
 }
 
 function wireBackCard(card, layer) {
-  card.querySelector('.lhead').addEventListener('click', () => card.classList.toggle('open'));
+  card.querySelector('.lhead').addEventListener('click', e => {
+    if (e.target.closest('[data-vis]')) { toggleVis(layer.id); return; }
+    card.classList.toggle('open');
+  });
   card.querySelectorAll('.cslider').forEach(sl => {
     const k   = sl.dataset.k;
     const num = card.querySelector(`[data-kn="${k}"]`);
