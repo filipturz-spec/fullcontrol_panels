@@ -97,6 +97,13 @@ canvas{display:block;background:#1e1c18}
 #depth-lbl input{width:38px;background:var(--sf2);border:1px solid var(--bd);color:var(--tx);border-radius:3px;padding:2px 4px;font-size:11px;text-align:right}
 #three-mount{flex:1;overflow:hidden}
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
+
+/* ── Face tabs ── */
+#face-tabs-bar{display:flex;gap:3px;padding:8px 12px;border-bottom:1px solid var(--bd);flex-shrink:0}
+.ftab{flex:1;background:var(--sf2);border:1px solid var(--bd);color:var(--dm);border-radius:var(--r);padding:5px 0;font-size:11px;font-weight:600;cursor:pointer;text-align:center;transition:background .1s,color .1s,border-color .1s}
+.ftab.active{background:var(--ac);border-color:var(--ac);color:#fff}
+.ftab:not(.active):hover{color:var(--ac2);border-color:var(--ac2)}
+.back-same{color:var(--dm);font-size:11px;padding:3px 0;font-style:italic}
 </style>
 </head>
 <body>
@@ -113,6 +120,10 @@ canvas{display:block;background:#1e1c18}
     </div>
 
     <div id="layers-area">
+      <div id="face-tabs-bar">
+        <button class="ftab active" data-tab="front">▣ Front</button>
+        <button class="ftab"        data-tab="back" >◧ Back</button>
+      </div>
       <div id="layers-toolbar">
         <span class="sec-title" style="margin:0">Layers</span>
         <button id="add-btn">+ Add Layer</button>
@@ -188,6 +199,7 @@ const App = {
 let layers = [];
 let paperLs = {};          // id → paper.Layer
 let borderPaperLayer = null;
+let activeTab = 'front';   // 'front' | 'back'
 
 // Segment counts are powers of 2: grid lines of any two layers always coincide.
 const SEG_OPTS = [2, 4, 8, 16, 32];
@@ -480,12 +492,14 @@ function drawSegments(layer, basePath) {
     // Flip horizontally around the segment centre cx.
     // Matrix(-1,0,0,1, 2*cx,0) maps x → 2*cx − x, y → y.
     if (flip) path.transform(new paper.Matrix(-1, 0, 0, 1, 2 * cx, 0));
-    path.strokeColor = new paper.Color(App.lineColor);
-    path.strokeWidth = layer.style.strokeWidth * PX;
-    path.fillColor   = null;
-    path.data.color  = App.lineColor;
-    path.strokeCap   = 'round';
-    path.strokeJoin  = 'round';
+    path.strokeColor      = new paper.Color(App.lineColor);
+    path.strokeWidth      = layer.style.strokeWidth * PX;
+    path.fillColor        = null;
+    path.data.color       = App.lineColor;
+    path.data.layerId     = layer.id;
+    path.data.segCenterPx = cx;
+    path.strokeCap        = 'round';
+    path.strokeJoin       = 'round';
   }
   basePath.remove(); // discard the untranslated original
 }
@@ -821,13 +835,30 @@ function refresh3DLines() {
 
     if (spine.length < 2) return;
 
+    // Resolve back-face x scaling for sine/square layers with independent back amplitude.
+    // Amplitude only scales horizontal deviation from the segment centre — y is identical
+    // on both faces (bow applies equally front and back).
+    const layerId  = path.data && path.data.layerId;
+    const lyr      = layerId ? layers.find(l => l.id === layerId) : null;
+    const backAmp  = lyr && lyr.backParams && lyr.backParams.amplitude !== undefined
+                       ? lyr.backParams.amplitude : null;
+    const frontAmp = lyr ? lyr.params.amplitude : null;
+    // cx3d: segment centre in 3D panel space (cm).  segCenterPx / PX = cm from left edge.
+    const cx3d     = (path.data && path.data.segCenterPx != null)
+                       ? path.data.segCenterPx / PX - App.panelW / 2
+                       : null;
+    const needScale = backAmp !== null && frontAmp !== null
+                      && backAmp !== frontAmp && cx3d !== null;
+    const ratio     = needScale ? (frontAmp !== 0 ? backAmp / frontAmp : 0) : 1;
+
     // Build a ribbon mesh: two vertices per spine point (front z=+half, back z=-half)
     const n   = spine.length;
     const pos = new Float32Array(n * 6);
     for (let i = 0; i < n; i++) {
-      const p = spine[i];
+      const p  = spine[i];
+      const bx = needScale ? cx3d + (p.x - cx3d) * ratio : p.x;
       pos[i*6+0] = p.x;  pos[i*6+1] = p.y;  pos[i*6+2] =  half;  // front
-      pos[i*6+3] = p.x;  pos[i*6+4] = p.y;  pos[i*6+5] = -half;  // back
+      pos[i*6+3] = bx;   pos[i*6+4] = p.y;  pos[i*6+5] = -half;  // back
     }
     const idx = new Uint32Array((n-1) * 6);
     for (let i = 0; i < n-1; i++) {
@@ -851,16 +882,18 @@ function refresh3DLines() {
 
 // ── Layer management ─────────────────────────────────────────────
 function addLayer(gen) {
+  const def = GEN_DEF[gen];
   const layer = {
-    id:       _uid++,
+    id:         _uid++,
     gen,
-    name:     `${GEN_META[gen].label} ${layers.length + 1}`,
-    visible:  true,
-    segments:  4,      // number of vertical strips across the panel
-    direction: 'LLLL', // 'LLLL' | 'LRLR' | 'RRRR'
-    flipV:     false,
-    params:   Object.assign({}, GEN_DEF[gen]),
-    style:    { strokeWidth: 0.3 },
+    name:       `${GEN_META[gen].label} ${layers.length + 1}`,
+    visible:    true,
+    segments:    4,      // number of vertical strips across the panel
+    direction:   'LLLL', // 'LLLL' | 'LRLR' | 'RRRR'
+    flipV:       false,
+    params:     Object.assign({}, def),
+    backParams: (['sine', 'square'].includes(gen) ? { amplitude: def.amplitude } : {}),
+    style:      { strokeWidth: 0.3 },
   };
   layers.push(layer);
   renderLayers();
@@ -948,6 +981,7 @@ function buildGenCtrls(layer) {
 }
 
 function buildCard(layer) {
+  if (activeTab === 'back') return buildBackCard(layer);
   const m  = GEN_META[layer.gen];
   const s  = layer.style;
   const gc = buildGenCtrls(layer);
@@ -975,7 +1009,25 @@ function buildCard(layer) {
     </div>`;
 }
 
+function buildBackCard(layer) {
+  const m          = GEN_META[layer.gen];
+  const hasBackAmp = layer.backParams && layer.backParams.amplitude !== undefined;
+  const ctrl       = hasBackAmp
+    ? `<div class="csec"><div class="ctitle">Back face</div>${srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, layer.backParams.amplitude)}</div>`
+    : `<div class="csec"><span class="back-same">— same as front —</span></div>`;
+  return `
+    <div class="lhead">
+      <div class="vis ${layer.visible ? 'on' : 'off'}" style="opacity:.45;pointer-events:none">●</div>
+      <span class="badge">${m.icon} ${m.label}</span>
+      <span class="lname">${layer.name}</span>
+      <span class="chev">›</span>
+    </div>
+    <div class="lbody">${ctrl}</div>`;
+}
+
 function wireCard(card, layer) {
+  if (activeTab === 'back') { wireBackCard(card, layer); return; }
+
   card.querySelector('.lhead').addEventListener('click', e => {
     if (e.target.closest('[data-vis]'))  { toggleVis(layer.id);      return; }
     if (e.target.closest('[data-copy]')) { duplicateLayer(layer.id); return; }
@@ -1005,10 +1057,22 @@ function wireCard(card, layer) {
     }));
 }
 
+function wireBackCard(card, layer) {
+  card.querySelector('.lhead').addEventListener('click', () => card.classList.toggle('open'));
+  card.querySelectorAll('.cslider').forEach(sl => {
+    const k   = sl.dataset.k;
+    const num = card.querySelector(`[data-kn="${k}"]`);
+    const upd = v => { layer.backParams[k] = parseFloat(v); refresh3DLines(); };
+    sl.addEventListener('input',  e => { if (num) num.value = e.target.value; upd(e.target.value); });
+    if (num) num.addEventListener('change', e => { sl.value = e.target.value; upd(e.target.value); });
+  });
+}
+
 function renderLayers() {
   const list = document.getElementById('layers-list');
   const open = new Set([...list.querySelectorAll('.lcard.open')].map(el => +el.dataset.id));
   list.innerHTML = '';
+  document.getElementById('add-btn').style.display = activeTab === 'back' ? 'none' : '';
   if (!layers.length) {
     list.innerHTML = '<div class="empty-msg">No layers yet.<br>Click <strong>+ Add Layer</strong> to begin.</div>';
     return;
@@ -1054,8 +1118,13 @@ function loadJSON(file) {
       App.panelW      = d.panelW || 120;
       App.panelH      = d.panelH || 180;
       App.warpAmount  = d.warpAmount || 0;
-      layers          = d.layers || [];
-      _uid            = layers.reduce((m, l) => Math.max(m, l.id), 0) + 1;
+      layers = d.layers || [];
+      // Migration: ensure backParams exists for layers saved before this feature.
+      layers.forEach(l => {
+        if (!l.backParams)
+          l.backParams = (['sine', 'square'].includes(l.gen) ? { amplitude: l.params.amplitude || 0 } : {});
+      });
+      _uid = layers.reduce((m, l) => Math.max(m, l.id), 0) + 1;
       document.getElementById('s-pw').value       = App.panelW;
       document.getElementById('s-ph').value       = App.panelH;
       document.getElementById('warp-slider').value = App.warpAmount;
@@ -1071,6 +1140,14 @@ window.addEventListener('DOMContentLoaded', () => {
   initCanvas(); resizeCanvas(); fitCanvas(); renderLayers(); fullRedraw();
   // Delay Three.js init by one frame so layout is fully computed
   requestAnimationFrame(() => init3D());
+
+  document.getElementById('face-tabs-bar').addEventListener('click', e => {
+    const btn = e.target.closest('.ftab');
+    if (!btn) return;
+    activeTab = btn.dataset.tab;
+    document.querySelectorAll('.ftab').forEach(b => b.classList.toggle('active', b.dataset.tab === activeTab));
+    renderLayers();
+  });
 
   const onPanel = () => {
     App.panelW = Math.max(10, +document.getElementById('s-pw').value || 120);
