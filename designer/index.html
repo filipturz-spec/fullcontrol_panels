@@ -154,8 +154,8 @@ canvas{display:block;background:#1e1c18}
         <span class="bsep">|</span>
         Lines <input type="color" id="line-color" value="#aaaaaa" title="Line colour for all layers">
         <span class="bsep">|</span>
-        Bow <input type="range" id="warp-slider" min="-60" max="60" step="1" value="0">
-        <input type="number" id="warp-num" min="-60" max="60" step="1" value="0"> cm
+        Bow <input type="range" id="warp-slider" min="-30" max="30" step="1" value="0">
+        <input type="number" id="warp-num" min="-30" max="30" step="1" value="0"> cm
       </div>
       <div id="canvas-scroll">
         <div id="canvas-inner"><canvas id="cv"></canvas></div>
@@ -576,6 +576,23 @@ function applyWarp() {
   });
 }
 
+// Zoom the Paper.js view so the warped content always fits within the
+// fixed W×H canvas pixel buffer.  Only positive warp (bow outward at
+// bottom) extends beyond the natural canvas boundary; negative warp
+// (concave inward) stays within bounds so no zoom change is needed.
+//
+// With zoom = H / (H + extra) and center = (W/2, (H+extra)/2):
+//   • top-centre  (W/2, 0)        → screen (W/2, 0)          ✓
+//   • bottom-centre (W/2, H+extra) → screen (W/2, H)          ✓
+//   • left/right margins are symmetric                         ✓
+function fitWarpedView() {
+  const { W, H } = getPx();
+  const extra  = Math.max(0, App.warpAmount * PX);
+  const totalH = H + extra;
+  paper.view.zoom   = H / totalH;
+  paper.view.center = new paper.Point(W / 2, totalH / 2);
+}
+
 function fullRedraw() {
   paper.project.clear();
   paperLs = {}; borderPaperLayer = null;
@@ -587,6 +604,7 @@ function fullRedraw() {
     drawIntoLayer(layer, pl);
   });
   applyWarp();
+  fitWarpedView();
   paper.view.update();
   refresh3DLines();
 }
@@ -1094,7 +1112,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const warpSlider = document.getElementById('warp-slider');
   const warpNum    = document.getElementById('warp-num');
   const onWarp = v => {
-    App.warpAmount   = Math.max(-60, Math.min(60, +v || 0));
+    App.warpAmount   = Math.max(-30, Math.min(30, +v || 0));
     warpSlider.value = App.warpAmount;
     warpNum.value    = App.warpAmount;
     fullRedraw();
