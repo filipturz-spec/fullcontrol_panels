@@ -535,8 +535,19 @@ function drawBorder() {
   };
   if (walls.top)    seg(0, 0, W, 0);
   if (walls.right)  seg(W, 0, W, H);
-  if (walls.bottom) seg(0, H, W, H);
   if (walls.left)   seg(0, 0, 0, H);
+  if (walls.bottom) {
+    // Draw as a 32-segment polyline so applyWarp() can deform each
+    // intermediate point into the sine arch.  At x=0 and x=W, sin=0,
+    // so the endpoints are always pinned — only the middle lifts/dips.
+    const N = 32;
+    const pts = [];
+    for (let i = 0; i <= N; i++) pts.push(new paper.Point(W * i / N, H));
+    const p = new paper.Path(pts);
+    p.strokeColor = new paper.Color(App.lineColor);
+    p.strokeWidth = sw; p.fillColor = null;
+    p.data.color  = App.lineColor;
+  }
 }
 
 // ── Post-processing warp ─────────────────────────────────────────
