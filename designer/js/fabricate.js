@@ -1,8 +1,8 @@
 /**
  * fabricate.js — GCode export for Partition Screen Designer
  *
- * Depends on globals defined in index.html's inline script:
- *   App, layers, bunchY(), dl()
+ * Reads App and layers from the shared global scope (set by index.html).
+ * All other helpers are defined locally — no other global dependencies.
  *
  * All output coordinates are in mm.
  * App params (amplitude, cycleH, depth, etc.) are in cm → ×10 for mm.
@@ -10,6 +10,25 @@
 'use strict';
 
 const _CM = 10; // cm → mm
+
+// ── Local download helper (no dependency on index.html's dl()) ────────────
+
+function _download(name, text, mime) {
+  const a = document.createElement('a');
+  a.href     = URL.createObjectURL(new Blob([text], { type: mime }));
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
+// ── Local bunchY (mirrors index.html, no global dependency) ──────────────
+
+function _bunchY(t, k) {
+  if (k <= 0) return t;
+  return (Math.exp(k * t) - 1) / (Math.exp(k) - 1);
+}
 
 // ── Bezier samplers ───────────────────────────────────────────────────────
 
@@ -55,7 +74,7 @@ function _rawSine(p, segW, H) {
     const t = s / N;
     const x = Math.max(-halfSeg, Math.min(halfSeg,
                 amp * Math.sin(2 * Math.PI * nCyc * t + phase)));
-    pts.push({ x, y: bunchY(t, k) * totalH });
+    pts.push({ x, y: _bunchY(t, k) * totalH });
   }
   return pts;
 }
@@ -76,8 +95,8 @@ function _rawBezier(p, segW, H) {
     pts.push({ x: 0, y: 0 });
     for (let c = 0; c < nCyc; c++) {
       const dir = c % 2 === 0 ? 1 : -1;
-      const y0  = bunchY(c / nCyc, k) * totalH;
-      const y1  = bunchY((c + 1) / nCyc, k) * totalH;
+      const y0  = _bunchY(c / nCyc, k) * totalH;
+      const y1  = _bunchY((c + 1) / nCyc, k) * totalH;
       const hv  = ((y1 - y0) / 2) * (p.sharpness || 0);
       for (let s = 1; s <= N; s++) {
         pts.push(_cubicBez(s / N,
@@ -91,8 +110,8 @@ function _rawBezier(p, segW, H) {
     const startX = (p.startPhase === 'peak') ? amp : -amp;
     pts.push({ x: startX, y: 0 });
     for (let c = 0; c < nCyc; c++) {
-      const y0    = bunchY(c / nCyc, k) * totalH;
-      const y1    = bunchY((c + 1) / nCyc, k) * totalH;
+      const y0    = _bunchY(c / nCyc, k) * totalH;
+      const y1    = _bunchY((c + 1) / nCyc, k) * totalH;
       const cpY   = (y1 - y0) / 3;
       const fromX = c % 2 === 0 ? startX : -startX;
       const toX   = -fromX;
@@ -143,8 +162,8 @@ function _rawSquare(p, segW, H) {
   }
 
   for (let c = 0; c < nCyc; c++) {
-    const y0    = bunchY(c / nCyc, k) * totalH;
-    const y1    = bunchY((c + 1) / nCyc, k) * totalH;
+    const y0    = _bunchY(c / nCyc, k) * totalH;
+    const y1    = _bunchY((c + 1) / nCyc, k) * totalH;
     const yM    = (y0 + y1) / 2;
     const halfH = (y1 - y0) / 2;
     const r     = Math.min((p.cornerRadius || 0) * _CM, halfH * 0.45, amp * 0.9);
@@ -311,10 +330,9 @@ function _sortPaths(paths) {
 function _buildGCode(sorted, cfg) {
   const H_mm      = App.panelH * _CM;
   const numLayers = Math.max(1, Math.round(cfg.depth / cfg.layerH));
-  const filArea   = Math.PI * (cfg.filmD / 2) ** 2;
-  const eRate     = (cfg.lineW * cfg.layerH) / filArea; // mm filament per mm travel
+  const eRate     = cfg.extMult;               // E units per mm of travel
   const f3        = v => v.toFixed(3);
-  const fMin      = v => Math.round(v * 60);            // mm/s → mm/min
+  const fMin      = v => Math.round(v * 60);  // mm/s → mm/min
 
   const out = [];
   out.push(
@@ -322,8 +340,8 @@ function _buildGCode(sorted, cfg) {
     `; Partition Screen — GCode`,
     `; Panel ${App.panelW}×${App.panelH} cm   Depth ${cfg.depth} mm`,
     `; ${numLayers} layers × ${cfg.layerH} mm   Line width ${cfg.lineW} mm`,
-    `; Nozzle ${cfg.nozzleT} °C   Bed ${cfg.bedT} °C   Ø${cfg.filmD} mm filament`,
-    `; Print ${cfg.printV} mm/s   Travel ${cfg.travelV} mm/s`,
+    `; Nozzle ${cfg.nozzleT} °C   Bed ${cfg.bedT} °C`,
+    `; Print ${cfg.printV} mm/s   Travel ${cfg.travelV} mm/s   E×${cfg.extMult}`,
     '; ================================================',
     '',
   );
@@ -397,17 +415,21 @@ function exportGCode() {
     travelV: gn('fab-ts'),
     nozzleT: gn('fab-nt'),
     bedT:    gn('fab-bt'),
-    filmD:   gn('fab-fd'),
+    extMult: gn('fab-em'),
     startG:  gv('fab-start'),
     endG:    gv('fab-end'),
   };
 
-  if (!layers.some(l => l.visible)) {
-    alert('No visible layers to export.'); return;
+  try {
+    if (!layers.some(l => l.visible)) {
+      alert('No visible layers to export.'); return;
+    }
+    const paths  = _extractPaths();
+    const sorted = _sortPaths(paths);
+    const gcode  = _buildGCode(sorted, cfg);
+    _download('partition-screen.gcode', gcode, 'text/plain');
+  } catch (err) {
+    alert('GCode export failed: ' + err.message);
+    console.error(err);
   }
-
-  const paths  = _extractPaths();
-  const sorted = _sortPaths(paths);
-  const gcode  = _buildGCode(sorted, cfg);
-  dl('partition-screen.gcode', gcode, 'text/plain');
 }
