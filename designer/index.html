@@ -99,6 +99,25 @@ canvas{display:block;background:#1e1c18}
 #three-mount{flex:1;overflow:hidden}
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bd);border-radius:3px}
 
+/* ── Fabricate panel ── */
+#fab-sec{border-bottom:1px solid var(--bd);flex-shrink:0}
+#fab-hdr{padding:8px 12px;cursor:pointer;display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:var(--ac2);letter-spacing:.03em;user-select:none}
+#fab-hdr:hover{background:var(--sf2)}
+#fab-chev{margin-left:auto;font-size:12px;color:var(--dm);transition:transform .15s}
+#fab-sec.open #fab-chev{transform:rotate(90deg)}
+#fab-body{display:none;padding:8px 12px 10px}
+#fab-sec.open #fab-body{display:block}
+.fab-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:6px}
+.fab-row{display:flex;flex-direction:column;gap:2px}
+.fab-row label{font-size:10px;color:var(--dm)}
+.fab-row input,.fab-row select{background:var(--sf2);border:1px solid var(--bd);color:var(--tx);border-radius:3px;padding:3px 5px;font-size:11px;width:100%}
+.fab-toggle{font-size:10px;color:var(--dm);cursor:pointer;margin-bottom:4px;user-select:none}
+.fab-toggle:hover{color:var(--ac2)}
+.fab-gcode{display:none;margin-top:4px}
+.fab-gcode.open{display:block}
+.fab-gcode textarea{width:100%;background:var(--sf2);border:1px solid var(--bd);color:var(--tx);border-radius:3px;padding:4px 6px;font-size:10px;font-family:monospace;resize:vertical;min-height:54px}
+.fab-gcode label{font-size:10px;color:var(--dm);display:block;margin-bottom:2px;margin-top:6px}
+
 /* ── Face tabs ── */
 #face-tabs-bar{display:flex;gap:3px;padding:8px 12px;border-bottom:1px solid var(--bd);flex-shrink:0}
 .ftab{flex:1;background:var(--sf2);border:1px solid var(--bd);color:var(--dm);border-radius:var(--r);padding:5px 0;font-size:11px;font-weight:600;cursor:pointer;text-align:center;transition:background .1s,color .1s,border-color .1s}
@@ -142,10 +161,34 @@ canvas{display:block;background:#1e1c18}
       </div>
     </div>
 
+    <div id="fab-sec">
+      <div id="fab-hdr">⬡ Fabricate <span id="fab-chev">›</span></div>
+      <div id="fab-body">
+        <div class="fab-grid">
+          <div class="fab-row"><label>Depth (mm)</label><input id="fab-depth" type="number" value="30" min="1" max="500" step="1"></div>
+          <div class="fab-row"><label>Layer height (mm)</label><input id="fab-lh" type="number" value="2" min="0.1" max="20" step="0.1"></div>
+          <div class="fab-row"><label>Line width (mm)</label><input id="fab-lw" type="number" value="1.0" min="0.1" max="10" step="0.1"></div>
+          <div class="fab-row"><label>Filament Ø (mm)</label><input id="fab-fd" type="number" value="1.75" min="1" max="3.5" step="0.05"></div>
+          <div class="fab-row"><label>Print speed (mm/s)</label><input id="fab-ps" type="number" value="40" min="1" max="500" step="1"></div>
+          <div class="fab-row"><label>Travel speed (mm/s)</label><input id="fab-ts" type="number" value="120" min="1" max="500" step="1"></div>
+          <div class="fab-row"><label>Nozzle temp (°C)</label><input id="fab-nt" type="number" value="220" min="0" max="400" step="1"></div>
+          <div class="fab-row"><label>Bed temp (°C)</label><input id="fab-bt" type="number" value="60" min="0" max="200" step="1"></div>
+        </div>
+        <div class="fab-toggle" id="fab-gc-toggle">▸ Custom start / end GCode</div>
+        <div class="fab-gcode" id="fab-gc-panel">
+          <label>Start GCode (leave blank for defaults)</label>
+          <textarea id="fab-start" placeholder="G28&#10;G92 E0&#10;..."></textarea>
+          <label>End GCode (leave blank for defaults)</label>
+          <textarea id="fab-end" placeholder="M104 S0&#10;G28 X Y&#10;M84"></textarea>
+        </div>
+      </div>
+    </div>
+
     <div id="sb-foot">
-      <button id="btn-export">Export SVG</button>
-      <button id="btn-save">Save JSON</button>
-      <label class="load-lbl">Load JSON<input type="file" id="file-load" accept=".json" style="display:none"></label>
+      <button id="btn-export">SVG</button>
+      <button id="btn-save">JSON</button>
+      <button id="btn-gcode">GCode</button>
+      <label class="load-lbl">Load<input type="file" id="file-load" accept=".json" style="display:none"></label>
     </div>
   </aside>
 
@@ -1215,6 +1258,18 @@ window.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btn-export').addEventListener('click', exportSVG);
   document.getElementById('btn-save').addEventListener('click', saveJSON);
+  document.getElementById('btn-gcode').addEventListener('click', exportGCode);
+
+  // Fabricate panel collapse toggle
+  document.getElementById('fab-hdr').addEventListener('click', () => {
+    document.getElementById('fab-sec').classList.toggle('open');
+  });
+  document.getElementById('fab-gc-toggle').addEventListener('click', () => {
+    const panel = document.getElementById('fab-gc-panel');
+    panel.classList.toggle('open');
+    document.getElementById('fab-gc-toggle').textContent =
+      panel.classList.contains('open') ? '▾ Custom start / end GCode' : '▸ Custom start / end GCode';
+  });
   document.getElementById('file-load').addEventListener('change', e => {
     const f = e.target.files[0]; if (f) loadJSON(f); e.target.value = '';
   });
@@ -1225,5 +1280,6 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 });
 </script>
+<script src="js/fabricate.js"></script>
 </body>
 </html>
