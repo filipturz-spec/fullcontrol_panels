@@ -1161,9 +1161,37 @@ function exportSVG() {
   dl('partition-screen.svg', svg, 'image/svg+xml');
 }
 
+function getFabCfg() {
+  const gv = id => document.getElementById(id).value;
+  const gn = id => parseFloat(gv(id)) || 0;
+  return {
+    depth:    gn('fab-depth'),
+    layerH:   gn('fab-lh'),
+    lineW:    gn('fab-lw'),
+    feedRate: gn('fab-em') || 1.0,
+    retract:  gn('fab-ret'),
+    printV:   gn('fab-ps'),
+    travelV:  gn('fab-ts'),
+    nozzleT:  gn('fab-nt'),
+    bedT:     gn('fab-bt'),
+    startG:   gv('fab-start'),
+    endG:     gv('fab-end'),
+  };
+}
+
 function saveJSON() {
   dl('partition-screen.json',
-    JSON.stringify({ panelW: App.panelW, panelH: App.panelH, warpAmount: App.warpAmount, layers }, null, 2),
+    JSON.stringify({
+      app: {
+        panelW:     App.panelW,
+        panelH:     App.panelH,
+        warpAmount: App.warpAmount,
+        showGrid:   App.showGrid,
+        border:     App.border,
+      },
+      layers,
+      cfg: getFabCfg(),
+    }, null, 2),
     'application/json');
 }
 
@@ -1171,10 +1199,14 @@ function loadJSON(file) {
   const r = new FileReader();
   r.onload = ev => {
     try {
-      const d    = JSON.parse(ev.target.result);
-      App.panelW      = d.panelW || 120;
-      App.panelH      = d.panelH || 180;
-      App.warpAmount  = d.warpAmount || 0;
+      const d   = JSON.parse(ev.target.result);
+      // Support both old flat format and new nested format.
+      const app = d.app || d;
+      App.panelW     = app.panelW     || 120;
+      App.panelH     = app.panelH     || 180;
+      App.warpAmount = app.warpAmount || 0;
+      App.showGrid   = app.showGrid   !== undefined ? app.showGrid : true;
+      if (app.border) App.border = app.border;
       layers = d.layers || [];
       // Migration: ensure backParams exists for layers saved before this feature.
       layers.forEach(l => {
@@ -1182,8 +1214,8 @@ function loadJSON(file) {
           l.backParams = (['sine', 'square'].includes(l.gen) ? { amplitude: l.params.amplitude || 0 } : {});
       });
       _uid = layers.reduce((m, l) => Math.max(m, l.id), 0) + 1;
-      document.getElementById('s-pw').value       = App.panelW;
-      document.getElementById('s-ph').value       = App.panelH;
+      document.getElementById('s-pw').value        = App.panelW;
+      document.getElementById('s-ph').value        = App.panelH;
       document.getElementById('warp-slider').value = App.warpAmount;
       document.getElementById('warp-num').value    = App.warpAmount;
       resizeCanvas(); fitCanvas(); renderLayers(); fullRedraw(); rebuild3DPanel();
