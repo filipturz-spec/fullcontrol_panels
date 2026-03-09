@@ -381,9 +381,11 @@
   function buildGCode(cfg) {
     var H_mm      = App.panelH * CM;
     var numLayers = Math.max(1, Math.round(cfg.depth / cfg.layerH));
-    var filRad    = cfg.filamentDia / 2;
-    // mm of filament per mm of travel: bead area / filament cross-section area
-    var eRate     = (cfg.lineW * cfg.layerH) / (Math.PI * filRad * filRad) * cfg.extMult;
+    // E units per mm of XY travel — calibrated empirically for the machine.
+    // For pellet extruders this is screw-output per mm; for filament it would
+    // be (lineW × layerH) / (π × r²), which the user can pre-calculate and
+    // enter here, or simply dial in by test print.
+    var eRate     = cfg.feedRate;
     var retract   = cfg.retract;               // mm of filament to retract
     var retF      = fMin(cfg.travelV);         // retract at travel speed
     var f3        = function (v) { return v.toFixed(3); };
@@ -395,9 +397,9 @@
       '; Partition Screen \u2014 GCode',
       '; Panel ' + App.panelW + '\xD7' + App.panelH + ' cm   Depth ' + cfg.depth + ' mm',
       '; ' + numLayers + ' layers \xD7 ' + cfg.layerH + ' mm',
-      '; Line ' + cfg.lineW + ' mm   Filament \u00D8' + cfg.filamentDia + ' mm   eRate ' + eRate.toFixed(4),
+      '; Line ' + cfg.lineW + ' mm   Feed rate ' + cfg.feedRate + ' E/mm',
       '; Nozzle ' + cfg.nozzleT + ' \xB0C   Bed ' + cfg.bedT + ' \xB0C',
-      '; Print ' + cfg.printV + ' mm/s   Travel ' + cfg.travelV + ' mm/s   Flow \xD7' + cfg.extMult,
+      '; Print ' + cfg.printV + ' mm/s   Travel ' + cfg.travelV + ' mm/s',
       '; Retract ' + retract + ' mm',
       '; ================================================',
       ''
@@ -494,10 +496,9 @@
       var cfg = {
         depth:       gn('fab-depth'),
         layerH:      gn('fab-lh'),
-        lineW:       gn('fab-lw'),
-        filamentDia: gn('fab-fd') || 1.75,
-        extMult:     gn('fab-em') || 1.0,
-        retract:     gn('fab-ret'),
+        lineW:    gn('fab-lw'),
+        feedRate: gn('fab-em') || 1.0,
+        retract:  gn('fab-ret'),
         printV:      gn('fab-ps'),
         travelV:     gn('fab-ts'),
         nozzleT:     gn('fab-nt'),
