@@ -241,11 +241,23 @@
   }
 
   // ── Segment stamping ─────────────────────────────────────────────────────
+  // halfLineW: half the print line width, used to inset paths from segment
+  // boundaries so adjacent stamped copies never overlap at the seam, and the
+  // outermost segments stay halfLineW inside the panel edge (border clearance).
 
-  function stampPaths(basePaths, layer, W_mm, H_mm) {
-    var n    = layer.segments;
-    var segW = W_mm / n;
-    var out  = [];
+  function stampPaths(basePaths, layer, W_mm, H_mm, halfLineW) {
+    var n       = layer.segments;
+    var segW    = W_mm / n;
+    var halfSeg = segW / 2;
+    var hw      = halfLineW || 0;
+    // Maximum |x| a point may have relative to the segment centre.
+    // This keeps each stamped copy from reaching the segment boundary,
+    // so adjacent copies are never closer than lineW to each other.
+    var bound   = halfSeg - hw;
+    var out     = [];
+
+    if (bound <= 0) return out; // lineW wider than segment — nothing to stamp
+
     for (var i = 0; i < n; i++) {
       var cx   = (i + 0.5) * segW;
       var flip = layer.direction === 'RRRR' ||
@@ -253,8 +265,9 @@
       for (var b = 0; b < basePaths.length; b++) {
         var base = basePaths[b];
         out.push(base.map(function (pt) {
+          var xRel = flip ? -pt.x : pt.x;
           return {
-            x: cx + (flip ? -pt.x : pt.x),
+            x: cx + Math.max(-bound, Math.min(bound, xRel)),
             y: layer.flipV ? H_mm - pt.y : pt.y,
           };
         }));
@@ -286,10 +299,17 @@
   // For layers with backParams.amplitude, the amplitude is linearly blended.
   // Border walls (if App.showGrid) are prepended to every layer's path list.
   // Warp deformation is applied to all paths before returning.
+  //
+  // lineW_mm: print line width in mm. Pattern path points are clamped to stay
+  // lineW_mm/2 inside the panel boundary so they never land on the border walls.
+  // stampPaths() uses the same value to keep adjacent segment copies separated.
 
-  function extractPathsAt(t) {
+  function extractPathsAt(t, lineW_mm) {
     var W_mm = App.panelW * CM;
     var H_mm = App.panelH * CM;
+    var hw   = (lineW_mm || 0) / 2;
+    var yMin = hw;
+    var yMax = H_mm - hw;
     var all  = [];
 
     // Border walls — printed on every Z layer as the structural frame.
@@ -336,9 +356,17 @@
         case 'circle':   basePaths = rawCirclePaths(blended, segW, H_mm);        break;
       }
 
-      var stamped = stampPaths(basePaths, layer, W_mm, H_mm);
+      var stamped = stampPaths(basePaths, layer, W_mm, H_mm, hw);
       for (var j = 0; j < stamped.length; j++) {
-        if (stamped[j].length >= 2) all.push(stamped[j]);
+        var sp = stamped[j];
+        if (sp.length < 2) continue;
+        // Clamp y so the path stays hw clear of the top and bottom border walls.
+        if (hw > 0) {
+          sp = sp.map(function (pt) {
+            return { x: pt.x, y: Math.max(yMin, Math.min(yMax, pt.y)) };
+          });
+        }
+        all.push(sp);
       }
     }
 
@@ -373,101 +401,18 @@
     return sorted;
   }
 
-  // ── Overlap removal via raster occupancy map ─────────────────────────────
-  // Splits each path into sub-paths tagged {pts, travel}. Segments that fall
-  // on already-occupied cells become travel-only (no extrusion); clear segments
-  // are marked occupied and kept as print moves.
-  //
-  // Cell size = lineW / 2 so two adjacent lines (separated by lineW) occupy
-  // different cells, but two lines on the same track share cells and are caught.
-
-  function removeOverlaps(paths, lineW, W_mm, H_mm) {
-    var cellSize = Math.max(lineW / 2, 0.1);
-    var cols     = Math.ceil(W_mm / cellSize) + 2;
-    var rows     = Math.ceil(H_mm / cellSize) + 2;
-    var grid     = new Uint8Array(cols * rows);
-    var result   = [];
-
-    function clampCol(c) { return Math.max(0, Math.min(cols - 1, c)); }
-    function clampRow(r) { return Math.max(0, Math.min(rows - 1, r)); }
-
-    // Bresenham rasterisation: yields grid indices along the segment.
-    function rasterize(x0, y0, x1, y1, callback) {
-      var c0 = Math.floor(x0 / cellSize);
-      var r0 = Math.floor(y0 / cellSize);
-      var c1 = Math.floor(x1 / cellSize);
-      var r1 = Math.floor(y1 / cellSize);
-      var dc = Math.abs(c1 - c0), sc = c0 < c1 ? 1 : -1;
-      var dr = -Math.abs(r1 - r0), sr = r0 < r1 ? 1 : -1;
-      var err = dc + dr;
-      var c = c0, r = r0;
-      for (;;) {
-        callback(clampCol(c) + clampRow(r) * cols);
-        if (c === c1 && r === r1) break;
-        var e2 = 2 * err;
-        if (e2 >= dr) { err += dr; c += sc; }
-        if (e2 <= dc) { err += dc; r += sr; }
-      }
-    }
-
-    function segmentOccupied(x0, y0, x1, y1) {
-      var hit = false;
-      rasterize(x0, y0, x1, y1, function (idx) { if (grid[idx]) hit = true; });
-      return hit;
-    }
-
-    function markSegment(x0, y0, x1, y1) {
-      rasterize(x0, y0, x1, y1, function (idx) { grid[idx] = 1; });
-    }
-
-    for (var pi = 0; pi < paths.length; pi++) {
-      var path = paths[pi];
-      if (path.length < 2) continue;
-
-      var subPts      = [path[0]];
-      var travelMode  = null; // null until first segment is evaluated
-
-      for (var si = 1; si < path.length; si++) {
-        var p0 = path[si - 1];
-        var p1 = path[si];
-        var occupied = segmentOccupied(p0.x, p0.y, p1.x, p1.y);
-
-        if (travelMode === null) {
-          travelMode = occupied;
-        } else if (occupied !== travelMode) {
-          // Mode changed — flush current sub-path
-          if (subPts.length >= 2) result.push({ pts: subPts, travel: travelMode });
-          subPts     = [path[si - 1]];
-          travelMode = occupied;
-        }
-
-        if (!occupied) markSegment(p0.x, p0.y, p1.x, p1.y);
-        subPts.push(p1);
-      }
-
-      if (subPts.length >= 2) result.push({ pts: subPts, travel: travelMode || false });
-    }
-
-    return result;
-  }
-
   // ── GCode builder ────────────────────────────────────────────────────────
   // Uses M83 relative extrusion. eRate is derived from bead cross-section so
   // the extruded volume matches the intended line width × layer height.
   // Paths are re-extracted per print layer for amplitude interpolation.
-  // Overlapping segments are demoted to travel moves via removeOverlaps().
 
   function buildGCode(cfg) {
     var W_mm      = App.panelW * CM;
     var H_mm      = App.panelH * CM;
     var numLayers = Math.max(1, Math.round(cfg.depth / cfg.layerH));
-    // E units per mm of XY travel — calibrated empirically for the machine.
-    // For pellet extruders this is screw-output per mm; for filament it would
-    // be (lineW × layerH) / (π × r²), which the user can pre-calculate and
-    // enter here, or simply dial in by test print.
     var eRate     = cfg.feedRate;
-    var retract   = cfg.retract;               // mm of filament to retract
-    var retF      = fMin(cfg.travelV);         // retract at travel speed
+    var retract   = cfg.retract;
+    var retF      = fMin(cfg.travelV);
     var f3        = function (v) { return v.toFixed(3); };
     function fMin(v) { return Math.round(v * 60); }
 
@@ -506,7 +451,7 @@
     for (var layer = 0; layer < numLayers; layer++) {
       // t=0 → back face (first/bottom layer), t=1 → front face (last/top layer)
       var t      = numLayers <= 1 ? 1 : layer / (numLayers - 1);
-      var paths  = extractPathsAt(t);
+      var paths  = extractPathsAt(t, cfg.lineW);
       var sorted = sortPaths(paths);
 
       var z = f3((layer + 1) * cfg.layerH);
@@ -515,55 +460,43 @@
       out.push('G92 E0');
       out.push('G1 Z' + z + ' F' + fMin(Math.min(cfg.printV, 10)));
 
-      var segments   = removeOverlaps(sorted, cfg.lineW, W_mm, H_mm);
       var cx = 0, cy = 0;
-      // needsRetract: true when extruder has been primed but not yet retracted
-      var needsRetract = false;
+      var primed = false;
 
-      for (var si = 0; si < segments.length; si++) {
-        var seg = segments[si];
-        var pts = seg.pts;
+      for (var pi = 0; pi < sorted.length; pi++) {
+        var pts = sorted[pi];
         var s0  = pts[0];
         var gy0 = H_mm - s0.y;
 
-        if (seg.travel) {
-          // Overlap zone — retract if needed, then traverse as G0 moves
-          if (needsRetract && retract > 0) {
-            out.push('G1 E-' + f3(retract) + ' F' + retF);
-            needsRetract = false;
-          }
-          out.push('G0 F' + fMin(cfg.travelV) + ' X' + f3(s0.x) + ' Y' + f3(gy0));
-          for (var i = 1; i < pts.length; i++) {
-            var pt = pts[i];
-            out.push('G0 X' + f3(pt.x) + ' Y' + f3(H_mm - pt.y));
-          }
-        } else {
-          // Clear zone — retract if primed, travel to start, prime, extrude
-          if (needsRetract && retract > 0) {
-            out.push('G1 E-' + f3(retract) + ' F' + retF);
-            needsRetract = false;
-          }
-          out.push('G0 F' + fMin(cfg.travelV) + ' X' + f3(s0.x) + ' Y' + f3(gy0));
-          if (retract > 0) {
-            out.push('G1 E' + f3(retract) + ' F' + retF);
-          }
-          needsRetract = true;
-          cx = s0.x; cy = s0.y;
+        // Retract before travel (skip before very first path on layer)
+        if (primed && retract > 0) {
+          out.push('G1 E-' + f3(retract) + ' F' + retF);
+        }
 
-          for (var i = 1; i < pts.length; i++) {
-            var pt  = pts[i];
-            var gy  = H_mm - pt.y;
-            var dx  = pt.x - cx;
-            var dy  = gy - (H_mm - cy);
-            var de  = Math.sqrt(dx * dx + dy * dy) * eRate;
-            // First segment on path sets speed; subsequent segments omit F
-            if (i === 1) {
-              out.push('G1 F' + fMin(cfg.printV) + ' X' + f3(pt.x) + ' Y' + f3(gy) + ' E' + f3(de));
-            } else {
-              out.push('G1 X' + f3(pt.x) + ' Y' + f3(gy) + ' E' + f3(de));
-            }
-            cx = pt.x; cy = pt.y;
+        // Travel to path start
+        out.push('G0 F' + fMin(cfg.travelV) + ' X' + f3(s0.x) + ' Y' + f3(gy0));
+
+        // Un-retract / prime
+        if (retract > 0) {
+          out.push('G1 E' + f3(retract) + ' F' + retF);
+        }
+        primed = true;
+
+        cx = s0.x; cy = s0.y;
+
+        for (var i = 1; i < pts.length; i++) {
+          var pt  = pts[i];
+          var gy  = H_mm - pt.y;
+          var dx  = pt.x - cx;
+          var dy  = gy - (H_mm - cy);
+          var de  = Math.sqrt(dx * dx + dy * dy) * eRate;
+          // First segment on path sets speed; subsequent segments omit F for brevity
+          if (i === 1) {
+            out.push('G1 F' + fMin(cfg.printV) + ' X' + f3(pt.x) + ' Y' + f3(gy) + ' E' + f3(de));
+          } else {
+            out.push('G1 X' + f3(pt.x) + ' Y' + f3(gy) + ' E' + f3(de));
           }
+          cx = pt.x; cy = pt.y;
         }
       }
       out.push('');
