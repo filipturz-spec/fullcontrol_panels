@@ -385,7 +385,7 @@ def trim_overlaps(paths, line_w):
         if exclusion is None:
             # First path always wins unconditionally.
             result.append(pts)
-            exclusion = line.buffer(line_w)
+            exclusion = line.buffer(line_w * 0.95)
             continue
 
         remaining = line.difference(exclusion)
@@ -404,19 +404,21 @@ def trim_overlaps(paths, line_w):
                     continue
                 result.append(coords)
                 # Only the accepted (printed) segment claims new space.
-                exclusion = exclusion.union(LineString(coords).buffer(line_w))
+                # Use 0.95 × line_w so paths that merely touch (adjacent beads)
+                # are not trimmed — only genuine overlaps are removed.
+                exclusion = exclusion.union(LineString(coords).buffer(line_w * 0.95))
 
     return result
 
 
 # ── Greedy nearest-endpoint path sort ─────────────────────────────────────────
 
-def sort_paths(paths):
+def sort_paths(paths, start=(0.0, 0.0)):
     if not paths:
         return []
     used   = [False] * len(paths)
     result = []
-    cx, cy = 0.0, 0.0
+    cx, cy = start
 
     for _ in range(len(paths)):
         best_i, best_d, best_rev = -1, float('inf'), False
@@ -481,27 +483,37 @@ def build_gcode(cfg, layers, app):
             '',
         ]
 
+    # When warp bows the bottom edge downward it can push Y below 0 in G-code
+    # coordinates (gy = H_mm - y becomes negative when y > H_mm).  Shift the
+    # entire print up by the maximum warp extent so the lowest point stays at 0.
+    A_warp     = (app.get('warpAmount', 0) or 0) * CM
+    y_offset   = max(0.0, A_warp)
+
     out.append(f'G0 F{fmm(cfg["travelV"])} Z{f3(cfg["layerH"])}')
     out.append('')
+
+    # Carry the head's XY position between layers so sort_paths begins from
+    # wherever the nozzle actually is, rather than always (0, 0).
+    sort_start = (0.0, 0.0)
 
     for layer_idx in range(num_layers):
         t      = 1.0 if num_layers <= 1 else layer_idx / (num_layers - 1)
         paths  = extract_paths_at(t, cfg, layers, app)
         paths  = trim_overlaps(paths, cfg['lineW'])
-        sorted_paths = sort_paths(paths)
+        sorted_paths = sort_paths(paths, sort_start)
 
         z = f3((layer_idx + 1) * cfg['layerH'])
         out += [';LAYER_CHANGE', f';Z:{z}', 'G92 E0',
                 f'G1 Z{z} F{fmm(min(cfg["printV"], 10))}']
 
-        cx, cy  = 0.0, 0.0
+        cx, cy  = sort_start
         primed  = False
 
         for pts in sorted_paths:
             if not pts:
                 continue
             x0, y0 = pts[0]
-            gy0    = H_mm - y0
+            gy0    = H_mm - y0 + y_offset
 
             if primed and retract > 0:
                 out.append(f'G1 E-{f3(retract)} F{fmm(cfg["travelV"])}')
@@ -514,15 +526,18 @@ def build_gcode(cfg, layers, app):
 
             cx, cy = x0, y0
             for i, (px, py) in enumerate(pts[1:], 1):
-                gy = H_mm - py
+                gy = H_mm - py + y_offset
                 dx = px - cx
-                dy = gy - (H_mm - cy)
+                dy = gy - (H_mm - cy + y_offset)
                 de = math.sqrt(dx*dx + dy*dy) * e_rate
                 if i == 1:
                     out.append(f'G1 F{fmm(cfg["printV"])} X{f3(px)} Y{f3(gy)} E{f3(de)}')
                 else:
                     out.append(f'G1 X{f3(px)} Y{f3(gy)} E{f3(de)}')
                 cx, cy = px, py
+
+        # Update start position for next layer's path sort.
+        sort_start = (cx, cy)
 
         out.append('')
 
