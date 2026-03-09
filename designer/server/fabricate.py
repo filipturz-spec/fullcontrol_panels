@@ -284,16 +284,37 @@ def extract_paths_at(t, cfg, layers, app):
     all_paths = []
 
     # Border walls — added first so they have highest trim priority.
+    # Walls are chained in CW order (top→right→bottom→left) so that adjacent
+    # enabled walls are combined into a single continuous path, minimising
+    # travel moves and retraction events.
     if app.get('showGrid') and border:
-        if walls.get('top'):
-            all_paths.append([(0, 0), (W_mm, 0)])
-        if walls.get('right'):
-            all_paths.append([(W_mm, 0), (W_mm, H_mm)])
-        if walls.get('left'):
-            all_paths.append([(0, 0), (0, H_mm)])
-        if walls.get('bottom'):
-            N = 32
-            all_paths.append([(W_mm * i / N, H_mm) for i in range(N + 1)])
+        N = 32
+        # Each entry: (wall_key, point_list) in CW winding so endpoints connect.
+        wall_segs = [
+            ('top',    [(0, 0), (W_mm, 0)]),
+            ('right',  [(W_mm, 0), (W_mm, H_mm)]),
+            ('bottom', [(W_mm * (N - i) / N, H_mm) for i in range(N + 1)]),
+            ('left',   [(0, H_mm), (0, 0)]),
+        ]
+
+        border_paths = []
+        current = []
+        for key, pts in wall_segs:
+            if walls.get(key):
+                if current:
+                    current.extend(pts[1:])   # shared corner already in current
+                else:
+                    current = list(pts)
+            else:
+                if current:
+                    border_paths.append(current)
+                    current = []
+        if current:
+            # If all 4 walls enabled the loop is already closed (left ends at
+            # (0,0) == top start), so just append as one continuous path.
+            border_paths.append(current)
+
+        all_paths.extend(border_paths)
 
     for layer in layers:
         if not layer.get('visible', True):
