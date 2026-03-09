@@ -167,7 +167,7 @@ canvas{display:block;background:#1e1c18}
         <div class="fab-grid">
           <div class="fab-row"><label>Depth (mm)</label><input id="fab-depth" type="number" value="30" min="1" max="500" step="1"></div>
           <div class="fab-row"><label>Layer height (mm)</label><input id="fab-lh" type="number" value="2" min="0.1" max="20" step="0.1"></div>
-          <div class="fab-row"><label>Line width (mm)</label><input id="fab-lw" type="number" value="1.0" min="0.1" max="10" step="0.1"></div>
+          <div class="fab-row"><label>Line width (mm)</label><input id="fab-lw" type="number" value="5" min="0.1" max="10" step="0.1"></div>
           <div class="fab-row"><label>Feed rate (E/mm)</label><input id="fab-em" type="number" value="1.0" min="0.001" max="100" step="0.001"></div>
           <div class="fab-row"><label>Retract (mm)</label><input id="fab-ret" type="number" value="0.8" min="0" max="10" step="0.1"></div>
           <div class="fab-row"><label>Print speed (mm/s)</label><input id="fab-ps" type="number" value="40" min="1" max="500" step="1"></div>
@@ -1084,7 +1084,15 @@ function wireCard(card, layer) {
   card.querySelectorAll('.cslider').forEach(sl => {
     const k   = sl.dataset.k;
     const num = card.querySelector(`[data-kn="${k}"]`);
-    const upd = v => { setParam(layer, k, parseFloat(v)); schedRedraw(layer.id); };
+    const upd = v => {
+      const val = parseFloat(v);
+      setParam(layer, k, val);
+      // Front amplitude is the master: keep back in sync so the back card starts
+      // from the same value and only diverges when the user explicitly touches it.
+      if (k === 'amplitude' && layer.backParams && layer.backParams.amplitude !== undefined)
+        layer.backParams.amplitude = val;
+      schedRedraw(layer.id);
+    };
     sl.addEventListener('input',  e => { if (num) num.value = e.target.value; upd(e.target.value); });
     if (num) num.addEventListener('change', e => { sl.value = e.target.value; upd(e.target.value); });
   });
