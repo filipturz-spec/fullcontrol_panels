@@ -374,24 +374,31 @@
   }
 
   // ── GCode builder ────────────────────────────────────────────────────────
-  // Paths are re-extracted and re-sorted for each print layer so that
-  // the amplitude interpolation (back → front) is baked per Z height.
+  // Uses M83 relative extrusion. eRate is derived from bead cross-section so
+  // the extruded volume matches the intended line width × layer height.
+  // Paths are re-extracted per print layer for amplitude interpolation.
 
   function buildGCode(cfg) {
     var H_mm      = App.panelH * CM;
     var numLayers = Math.max(1, Math.round(cfg.depth / cfg.layerH));
-    var eRate     = cfg.extMult;
+    var filRad    = cfg.filamentDia / 2;
+    // mm of filament per mm of travel: bead area / filament cross-section area
+    var eRate     = (cfg.lineW * cfg.layerH) / (Math.PI * filRad * filRad) * cfg.extMult;
+    var retract   = cfg.retract;               // mm of filament to retract
+    var retF      = fMin(cfg.travelV);         // retract at travel speed
     var f3        = function (v) { return v.toFixed(3); };
-    var fMin      = function (v) { return Math.round(v * 60); };
+    function fMin(v) { return Math.round(v * 60); }
 
     var out = [];
     out.push(
       '; ================================================',
       '; Partition Screen \u2014 GCode',
       '; Panel ' + App.panelW + '\xD7' + App.panelH + ' cm   Depth ' + cfg.depth + ' mm',
-      '; ' + numLayers + ' layers \xD7 ' + cfg.layerH + ' mm   Line width ' + cfg.lineW + ' mm',
+      '; ' + numLayers + ' layers \xD7 ' + cfg.layerH + ' mm',
+      '; Line ' + cfg.lineW + ' mm   Filament \u00D8' + cfg.filamentDia + ' mm   eRate ' + eRate.toFixed(4),
       '; Nozzle ' + cfg.nozzleT + ' \xB0C   Bed ' + cfg.bedT + ' \xB0C',
-      '; Print ' + cfg.printV + ' mm/s   Travel ' + cfg.travelV + ' mm/s   E\xD7' + cfg.extMult,
+      '; Print ' + cfg.printV + ' mm/s   Travel ' + cfg.travelV + ' mm/s   Flow \xD7' + cfg.extMult,
+      '; Retract ' + retract + ' mm',
       '; ================================================',
       ''
     );
@@ -404,13 +411,16 @@
         'M140 S' + cfg.bedT,
         'M109 S' + cfg.nozzleT,
         'M190 S' + cfg.bedT,
-        'G28', 'G92 E0', 'G90', 'M82', ''
+        'G28',
+        'G90',   // absolute XYZ
+        'M83',   // relative extrusion
+        'G92 E0',
+        ''
       );
     }
 
     out.push('G0 F' + fMin(cfg.travelV) + ' Z' + f3(cfg.layerH), '');
 
-    var E = 0;
     for (var layer = 0; layer < numLayers; layer++) {
       // t=0 → back face (first/bottom layer), t=1 → front face (last/top layer)
       var t      = numLayers <= 1 ? 1 : layer / (numLayers - 1);
@@ -418,16 +428,33 @@
       var sorted = sortPaths(paths);
 
       var z = f3((layer + 1) * cfg.layerH);
-      out.push('; --- Layer ' + (layer + 1) + '/' + numLayers + '  Z=' + z + ' ---');
-      out.push('G0 Z' + z);
+      out.push(';LAYER_CHANGE');
+      out.push(';Z:' + z);
+      out.push('G92 E0');
+      out.push('G1 Z' + z + ' F' + fMin(Math.min(cfg.printV, 10)));
 
       var cx = 0, cy = 0;
+      var primed = false;
+
       for (var pi = 0; pi < sorted.length; pi++) {
         var pts = sorted[pi];
         var s0  = pts[0];
         var gy0 = H_mm - s0.y;
+
+        // Retract before travel (skip before very first path on layer)
+        if (primed && retract > 0) {
+          out.push('G1 E-' + f3(retract) + ' F' + retF);
+        }
+
+        // Travel to path start
         out.push('G0 F' + fMin(cfg.travelV) + ' X' + f3(s0.x) + ' Y' + f3(gy0));
-        out.push('G1 F' + fMin(cfg.printV));
+
+        // Un-retract / prime
+        if (retract > 0) {
+          out.push('G1 E' + f3(retract) + ' F' + retF);
+        }
+        primed = true;
+
         cx = s0.x; cy = s0.y;
 
         for (var i = 1; i < pts.length; i++) {
@@ -435,8 +462,13 @@
           var gy  = H_mm - pt.y;
           var dx  = pt.x - cx;
           var dy  = gy - (H_mm - cy);
-          E += Math.sqrt(dx * dx + dy * dy) * eRate;
-          out.push('G1 X' + f3(pt.x) + ' Y' + f3(gy) + ' E' + f3(E));
+          var de  = Math.sqrt(dx * dx + dy * dy) * eRate;
+          // First segment on path sets speed; subsequent segments omit F for brevity
+          if (i === 1) {
+            out.push('G1 F' + fMin(cfg.printV) + ' X' + f3(pt.x) + ' Y' + f3(gy) + ' E' + f3(de));
+          } else {
+            out.push('G1 X' + f3(pt.x) + ' Y' + f3(gy) + ' E' + f3(de));
+          }
           cx = pt.x; cy = pt.y;
         }
       }
@@ -460,16 +492,18 @@
 
     try {
       var cfg = {
-        depth:   gn('fab-depth'),
-        layerH:  gn('fab-lh'),
-        lineW:   gn('fab-lw'),
-        printV:  gn('fab-ps'),
-        travelV: gn('fab-ts'),
-        nozzleT: gn('fab-nt'),
-        bedT:    gn('fab-bt'),
-        extMult: gn('fab-em'),
-        startG:  gv('fab-start'),
-        endG:    gv('fab-end'),
+        depth:       gn('fab-depth'),
+        layerH:      gn('fab-lh'),
+        lineW:       gn('fab-lw'),
+        filamentDia: gn('fab-fd') || 1.75,
+        extMult:     gn('fab-em') || 1.0,
+        retract:     gn('fab-ret'),
+        printV:      gn('fab-ps'),
+        travelV:     gn('fab-ts'),
+        nozzleT:     gn('fab-nt'),
+        bedT:        gn('fab-bt'),
+        startG:      gv('fab-start'),
+        endG:        gv('fab-end'),
       };
 
       var hasBorder = App.showGrid && App.border &&
