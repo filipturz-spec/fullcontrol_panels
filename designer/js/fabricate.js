@@ -300,22 +300,32 @@
   // Border walls (if App.showGrid) are prepended to every layer's path list.
   // Warp deformation is applied to all paths before returning.
   //
-  // lineW_mm: print line width in mm. Pattern path points are clamped to stay
-  // lineW_mm/2 inside the panel boundary so they never land on the border walls.
-  // stampPaths() uses the same value to keep adjacent segment copies separated.
+  // lineW_mm: print line width in mm.
+  //   • stampPaths() uses hw = lineW/2 to keep adjacent segment copies lineW
+  //     apart at every segment boundary (each side contributes hw).
+  //   • Pattern paths are then clamped to stay lineW away from any active
+  //     border wall (full lineW because the wall is an external bead, not a
+  //     shared boundary), or hw from a panel edge with no wall.
 
   function extractPathsAt(t, lineW_mm) {
-    var W_mm = App.panelW * CM;
-    var H_mm = App.panelH * CM;
-    var hw   = (lineW_mm || 0) / 2;
-    var yMin = hw;
-    var yMax = H_mm - hw;
-    var all  = [];
+    var W_mm  = App.panelW * CM;
+    var H_mm  = App.panelH * CM;
+    var lw    = lineW_mm || 0;
+    var hw    = lw / 2;
+    var walls = (App.showGrid && App.border) ? (App.border.walls || {}) : {};
+    var all   = [];
+
+    // Clearance from each panel edge for pattern paths:
+    //   full lineW where a border wall exists (wall bead + pattern bead must not overlap),
+    //   hw otherwise (just keeps paths inside the panel).
+    var xMin = walls.left   ? lw : hw;
+    var xMax = W_mm - (walls.right  ? lw : hw);
+    var yMin = walls.top    ? lw : hw;
+    var yMax = H_mm - (walls.bottom ? lw : hw);
 
     // Border walls — printed on every Z layer as the structural frame.
     // Bottom wall uses 32 intermediate points so the warp curves it smoothly.
     if (App.showGrid && App.border) {
-      var walls = App.border.walls || {};
       if (walls.top)   all.push([{ x: 0,    y: 0    }, { x: W_mm, y: 0    }]);
       if (walls.right) all.push([{ x: W_mm, y: 0    }, { x: W_mm, y: H_mm }]);
       if (walls.left)  all.push([{ x: 0,    y: 0    }, { x: 0,    y: H_mm }]);
@@ -360,10 +370,13 @@
       for (var j = 0; j < stamped.length; j++) {
         var sp = stamped[j];
         if (sp.length < 2) continue;
-        // Clamp y so the path stays hw clear of the top and bottom border walls.
-        if (hw > 0) {
+        // Clamp all four sides: keeps paths clear of border walls (or panel edge).
+        if (lw > 0) {
           sp = sp.map(function (pt) {
-            return { x: pt.x, y: Math.max(yMin, Math.min(yMax, pt.y)) };
+            return {
+              x: Math.max(xMin, Math.min(xMax, pt.x)),
+              y: Math.max(yMin, Math.min(yMax, pt.y)),
+            };
           });
         }
         all.push(sp);
