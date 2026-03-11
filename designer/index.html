@@ -980,6 +980,13 @@ function setParam(layer, k, v) {
 }
 
 // ── UI builders ──────────────────────────────────────────────────
+// Returns a finer step for layer parameters when the panel is small.
+// amplitude/cornerRadius/inset: base 0.5 cm → 0.1 cm under 30 cm.
+// cycleH: base 5 cm → 1 cm under 30 cm.
+const layerStep = base => Math.min(App.panelW, App.panelH) < 30
+  ? (base >= 4 ? 1 : 0.1)   // cycleH (5) → 1, amplitude (0.5) → 0.1
+  : base;
+
 function srow(lbl, k, min, max, step, val) {
   return `<div class="crow">
     <span class="clbl">${lbl}</span>
@@ -1001,24 +1008,24 @@ function chkrow(lbl, k, checked) {
 function buildGenCtrls(layer) {
   const p = layer.params;
   if (layer.gen === 'straight') return '';
-  const cycleRow   = srow('Cycle height (cm)',        'cycleH',        5,   200, 5,    p.cycleH);
-  const visRow     = srow('Visible cycles (0 = all)', 'visibleCycles', 0,   40,  1,    p.visibleCycles);
-  const bunchRow   = srow('Bunching',                 'bunch',         0,   1,   0.01, p.bunch);
+  const cycleRow   = srow('Cycle height (cm)',        'cycleH',        5,   200, layerStep(5),   p.cycleH);
+  const visRow     = srow('Visible cycles (0 = all)', 'visibleCycles', 0,   40,  1,              p.visibleCycles);
+  const bunchRow   = srow('Bunching',                 'bunch',         0,   1,   0.01,           p.bunch);
   const phaseRow   = selrow('Phase start', 'startPhase', ['center', 'peak', 'valley'], p.startPhase);
   if (layer.gen === 'sine')
-    return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
+    return srow('Amplitude (cm)', 'amplitude', 0, 30, layerStep(0.5), p.amplitude)
          + phaseRow + cycleRow + visRow + bunchRow;
   if (layer.gen === 'bezier')
-    return srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, p.amplitude)
-         + srow('Sharpness',      'sharpness', 0, 1,  0.01, p.sharpness)
+    return srow('Amplitude (cm)', 'amplitude', 0, 30, layerStep(0.5), p.amplitude)
+         + srow('Sharpness',      'sharpness', 0, 1,  0.01,           p.sharpness)
          + phaseRow + cycleRow + visRow + bunchRow;
   if (layer.gen === 'arch')
     return srow('Depth (cm)',    'depth',     1, 200,  1,    p.depth)
          + srow('Sharpness',     'sharpness', 0, 0.95, 0.05, p.sharpness)
-         + srow('Side inset (cm)', 'inset',   0, 50,   0.5,  p.inset);
+         + srow('Side inset (cm)', 'inset',   0, 50,   layerStep(0.5), p.inset);
   if (layer.gen === 'square')
-    return srow('Amplitude (cm)',      'amplitude',    0, 30, 0.5,  p.amplitude)
-         + srow('Corner radius (cm)',  'cornerRadius', 0, 15, 0.25, p.cornerRadius)
+    return srow('Amplitude (cm)',      'amplitude',    0, 30, layerStep(0.5),  p.amplitude)
+         + srow('Corner radius (cm)',  'cornerRadius', 0, 15, layerStep(0.25), p.cornerRadius)
          + cycleRow + visRow + bunchRow;
   if (layer.gen === 'circle')
     return srow('Diameter (cm)', 'diameter', 1, 200, 1, p.diameter)
@@ -1059,7 +1066,7 @@ function buildBackCard(layer) {
   const m          = GEN_META[layer.gen];
   const hasBackAmp = layer.backParams && layer.backParams.amplitude !== undefined;
   const ctrl       = hasBackAmp
-    ? `<div class="csec"><div class="ctitle">Back face</div>${srow('Amplitude (cm)', 'amplitude', 0, 30, 0.5, layer.backParams.amplitude)}</div>`
+    ? `<div class="csec"><div class="ctitle">Back face</div>${srow('Amplitude (cm)', 'amplitude', 0, 30, layerStep(0.5), layer.backParams.amplitude)}</div>`
     : `<div class="csec"><span class="back-same">— same as front —</span></div>`;
   return `
     <div class="lhead">
@@ -1253,6 +1260,16 @@ window.addEventListener('DOMContentLoaded', () => {
     App.panelW = Math.max(10, +document.getElementById('s-pw').value || 120);
     App.panelH = Math.max(10, +document.getElementById('s-ph').value || 180);
     updatePanelStep('s-pw'); updatePanelStep('s-ph');
+    // Re-apply layer slider steps for any open control cards.
+    const small = Math.min(App.panelW, App.panelH) < 30;
+    document.querySelectorAll('.cslider[data-k="amplitude"],.cnum[data-kn="amplitude"]')
+      .forEach(el => { el.step = small ? '0.1' : '0.5'; });
+    document.querySelectorAll('.cslider[data-k="cycleH"],.cnum[data-kn="cycleH"]')
+      .forEach(el => { el.step = small ? '1' : '5'; });
+    document.querySelectorAll('.cslider[data-k="cornerRadius"],.cnum[data-kn="cornerRadius"]')
+      .forEach(el => { el.step = small ? '0.05' : '0.25'; });
+    document.querySelectorAll('.cslider[data-k="inset"],.cnum[data-kn="inset"]')
+      .forEach(el => { el.step = small ? '0.1' : '0.5'; });
     resizeCanvas(); fitCanvas(); fullRedraw(); rebuild3DPanel();
   };
   ['s-pw', 's-ph'].forEach(id => document.getElementById(id).addEventListener('change', onPanel));

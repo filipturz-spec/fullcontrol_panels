@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 try:
-    from shapely.geometry import LineString, MultiLineString
+    from shapely.geometry import LineString, MultiLineString, box
     from shapely.ops import unary_union
     HAS_SHAPELY = True
 except ImportError:
@@ -442,91 +442,134 @@ def sort_paths(paths, start=(0.0, 0.0)):
     return result
 
 
-# ── Travel-move collision avoidance ───────────────────────────────────────────
+# ── Travel-move collision avoidance (grid A*) ─────────────────────────────────
 
-def build_printed_zone(paths, line_w):
-    """Return a Shapely polygon representing all printed beads (buffered by bead radius)."""
+def build_travel_grid(paths, line_w, W_mm, H_mm):
+    """
+    Rasterise all printed beads onto a regular grid.
+    Returns (blocked: set of (col,row), cols, rows, cell_size).
+    A cell is blocked when it overlaps any printed bead.
+    Cell size equals the line width (minimum 3 mm) so a single bead
+    exactly fills one cell — travel through a cell means crossing a bead.
+    """
     if not HAS_SHAPELY or not paths:
-        return None
+        return set(), 0, 0, 1.0
+
+    cell = max(line_w, 3.0)
+    cols = int(math.ceil(W_mm / cell)) + 2
+    rows = int(math.ceil(H_mm / cell)) + 2
+
+    # Build union of bead footprints once, then rasterise.
     bufs = [LineString(pts).buffer(line_w * 0.5) for pts in paths if len(pts) >= 2]
-    return unary_union(bufs) if bufs else None
+    if not bufs:
+        return set(), cols, rows, cell
+    zone = unary_union(bufs)
+
+    blocked = set()
+    for c in range(cols):
+        for r in range(rows):
+            cell_box = box(c * cell, r * cell, (c + 1) * cell, (r + 1) * cell)
+            if zone.intersects(cell_box):
+                blocked.add((c, r))
+
+    return blocked, cols, rows, cell
 
 
-def route_travel(A, B, printed_zone):
+def route_travel(A, B, blocked, cols, rows, cell_size, printed_zone):
     """
-    Find a travel path from A to B that avoids crossing the boundary of any
-    already-printed bead ('avoid crossing perimeters').
+    A* pathfinding on the pre-built blocked grid to route a travel move from
+    A to B without crossing already-printed beads ('avoid crossing perimeters').
 
-    Strategy: build a visibility graph from A, B and the simplified boundary
-    vertices of printed_zone, then run Dijkstra.  Edges that would cross into
-    the interior of a bead are forbidden; edges that stay outside OR stay
-    fully inside (travelling on top of an existing bead) are allowed.
-
-    Falls back to the direct segment if no cleaner route is found or the
-    geometry is too complex to process quickly.
+    Falls back to the direct segment when no routing is needed or no clear
+    path exists (e.g. the destination is completely surrounded).
     """
-    if not HAS_SHAPELY or printed_zone is None:
+    if not HAS_SHAPELY or printed_zone is None or not blocked:
         return [A, B]
 
     direct = LineString([A, B])
     if not direct.crosses(printed_zone):
-        return [A, B]   # already clean
+        return [A, B]   # direct is already clean
 
-    # Simplify boundary to keep vertex count manageable.
-    zone = printed_zone.simplify(1.5, preserve_topology=True)
+    def to_grid(pt):
+        return (max(0, min(cols - 1, int(pt[0] / cell_size))),
+                max(0, min(rows - 1, int(pt[1] / cell_size))))
 
-    waypoints = [A, B]
-    geoms = list(zone.geoms) if hasattr(zone, 'geoms') else [zone]
-    for g in geoms:
-        if g.geom_type == 'Polygon':
-            waypoints.extend(list(g.exterior.coords)[:-1])
+    def to_world(c, r):
+        return (c * cell_size + cell_size * 0.5, r * cell_size + cell_size * 0.5)
 
-    if len(waypoints) > 150:
-        return [A, B]   # too complex – fall back to direct travel
+    ga = to_grid(A)
+    gb = to_grid(B)
 
-    n = len(waypoints)
+    if ga == gb:
+        return [A, B]
 
-    # Build adjacency list: an edge (i→j) is valid when the segment does not
-    # cross (enter then exit) the printed zone.  Segments that lie entirely
-    # inside or entirely outside are both permitted.
-    adj = [[] for _ in range(n)]
-    for i in range(n):
-        for j in range(i + 1, n):
-            seg = LineString([waypoints[i], waypoints[j]])
-            if not seg.crosses(zone):
-                d = math.hypot(waypoints[j][0] - waypoints[i][0],
-                               waypoints[j][1] - waypoints[i][1])
-                adj[i].append((d, j))
-                adj[j].append((d, i))
+    # If start or end cells are blocked, find the nearest open neighbour.
+    def nearest_open(gc):
+        if gc not in blocked:
+            return gc
+        for d in range(1, 10):
+            for dc in range(-d, d + 1):
+                for dr in range(-d, d + 1):
+                    if abs(dc) != d and abs(dr) != d:
+                        continue
+                    nb = (gc[0] + dc, gc[1] + dr)
+                    if 0 <= nb[0] < cols and 0 <= nb[1] < rows and nb not in blocked:
+                        return nb
+        return gc
 
-    # Dijkstra from A (index 0) to B (index 1).
+    ga = nearest_open(ga)
+    gb = nearest_open(gb)
+
+    # A* with 8-connectivity.
     INF = float('inf')
-    dist = [INF] * n
-    prev = [-1] * n
-    dist[0] = 0.0
-    pq = [(0.0, 0)]
+    g_score  = {ga: 0.0}
+    came_from = {}
+    open_set  = [(math.hypot(gb[0] - ga[0], gb[1] - ga[1]), ga)]
 
-    while pq:
-        d, u = heapq.heappop(pq)
-        if d > dist[u]:
-            continue
-        for w, v in adj[u]:
-            nd = d + w
-            if nd < dist[v]:
-                dist[v] = nd
-                prev[v] = u
-                heapq.heappush(pq, (nd, v))
+    while open_set:
+        _, cur = heapq.heappop(open_set)
+        if cur == gb:
+            break
+        cur_g = g_score.get(cur, INF)
+        for dc in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                if dc == 0 and dr == 0:
+                    continue
+                nb = (cur[0] + dc, cur[1] + dr)
+                if not (0 <= nb[0] < cols and 0 <= nb[1] < rows):
+                    continue
+                if nb in blocked:
+                    continue
+                ng = cur_g + math.hypot(dc, dr)
+                if ng < g_score.get(nb, INF):
+                    g_score[nb]  = ng
+                    came_from[nb] = cur
+                    heapq.heappush(open_set,
+                        (ng + math.hypot(gb[0] - nb[0], gb[1] - nb[1]), nb))
 
-    if dist[1] == INF:
-        return [A, B]   # no clean route found
+    if gb not in came_from and ga != gb:
+        return [A, B]   # no path found
 
-    path = []
-    cur = 1
-    while cur != -1:
-        path.append(waypoints[cur])
-        cur = prev[cur]
-    path.reverse()
-    return path
+    # Reconstruct grid path.
+    grid_path, cur = [], gb
+    while cur != ga:
+        grid_path.append(cur)
+        cur = came_from.get(cur)
+        if cur is None:
+            return [A, B]
+    grid_path.append(ga)
+    grid_path.reverse()
+
+    # Convert to world coords, keeping only direction-change points.
+    world_path = [A]
+    for i in range(1, len(grid_path) - 1):
+        p, n = grid_path[i - 1], grid_path[i + 1]
+        dc1 = grid_path[i][0] - p[0]; dr1 = grid_path[i][1] - p[1]
+        dc2 = n[0] - grid_path[i][0]; dr2 = n[1] - grid_path[i][1]
+        if (dc1, dr1) != (dc2, dr2):
+            world_path.append(to_world(*grid_path[i]))
+    world_path.append(B)
+    return world_path
 
 
 # ── G-code builder ────────────────────────────────────────────────────────────
@@ -590,8 +633,16 @@ def build_gcode(cfg, layers, app):
         paths  = trim_overlaps(paths, cfg['lineW'])
         sorted_paths = sort_paths(paths, sort_start)
 
-        # Build the printed zone once per layer for travel-move avoidance.
-        printed_zone = build_printed_zone(paths, cfg['lineW'])
+        # Build printed zone + travel grid once per layer.
+        blocked, grid_cols, grid_rows, cell_size = \
+            build_travel_grid(paths, cfg['lineW'], W_mm, H_mm)
+        # A lightweight polygon union for the fast direct-path check.
+        if HAS_SHAPELY and paths:
+            _bufs = [LineString(pts).buffer(cfg['lineW'] * 0.5)
+                     for pts in paths if len(pts) >= 2]
+            printed_zone = unary_union(_bufs) if _bufs else None
+        else:
+            printed_zone = None
 
         z = f3((layer_idx + 1) * cfg['layerH'])
         out += [';LAYER_CHANGE', f';Z:{z}', 'G92 E0',
@@ -610,7 +661,9 @@ def build_gcode(cfg, layers, app):
                 out.append(f'G1 E-{f3(retract)} F{fmm(cfg["travelV"])}')
 
             # Route travel so it avoids crossing bead sides.
-            travel_pts = route_travel((cx, cy), (x0, y0), printed_zone)
+            travel_pts = route_travel((cx, cy), (x0, y0),
+                                      blocked, grid_cols, grid_rows, cell_size,
+                                      printed_zone)
             if len(travel_pts) > 2:
                 # Intermediate waypoints (first is current pos, last is x0/y0).
                 for wx, wy in travel_pts[1:-1]:
