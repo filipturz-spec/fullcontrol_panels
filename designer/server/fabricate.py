@@ -444,34 +444,36 @@ def sort_paths(paths, start=(0.0, 0.0)):
 
 # ── Travel routing via existing path curves ───────────────────────────────────
 #
-# Instead of a coarse grid, we route travel moves ALONG the already-generated
-# path segments.  Those curves are smooth, they lie exactly on printed beads,
-# and traversing them without extruding is invisible.
+# Travel moves are routed ALONG already-generated path segments.  Those curves
+# are smooth, they sit exactly on printed beads, and traversing them without
+# extruding is invisible.  The same segment may be traversed by multiple travel
+# moves — that is fine and desirable.
 #
 # Graph structure (built once per layer, reused for every travel move):
-#   Nodes  — start & end of every printed path
-#   Edges  — along-path (traverse the full curve, cost = arc length,
-#             waypoints = all intermediate points → smooth motion)
-#           — short direct jump between nearby endpoints (≤ MAX_JUMP mm)
+#   Nodes  — sampled at regular intervals (~_SAMPLE_MM mm) along every path,
+#             so any travel move can "board" a path near its closest point —
+#             not only at the far-away endpoints.
+#   Edges  — along-segment: connects consecutive sampled nodes with the
+#             exact curve points as waypoints → smooth motion.
+#           — short direct jump: between any two nearby nodes (≤ _MAX_JUMP mm),
+#             no Shapely check (used for cheap boarding transitions).
 #
 # For each travel A→B the two endpoints are added temporarily and connected
-# to the K nearest graph nodes (with a Shapely penalty if the connection
-# crosses open air).  Dijkstra finds the minimum-cost route.
-#
-# The result is a sequence of actual curve points — no staircase artefacts.
+# to their K nearest graph nodes (Shapely penalty for open-air links).
+# Dijkstra finds the minimum-cost route.
 
 _TRAVEL_PENALTY = 5.0   # open-air cost multiplier vs on-bead travel
-_K_NEAR         = 15    # how many nearest nodes to check for A/B connections
-_MAX_JUMP       = 50.0  # mm — max distance for a free jump between path endpoints
+_K_NEAR         = 20    # nearest nodes checked for A/B connections
+_MAX_JUMP       = 50.0  # mm — max gap for a free direct jump between nodes
+_SAMPLE_MM      = 25.0  # mm — node sampling interval along each path
 
 
 def build_path_graph(paths, line_w):
     """
-    Pre-build the path-endpoint graph for a layer.
+    Pre-build the path graph for travel routing.
+    Nodes are sampled every _SAMPLE_MM mm along every path, giving the
+    router fine-grained boarding points on long paths like the border.
     Returns (nodes, adj, zone).
-      nodes  — list of (x, y) endpoint coordinates
-      adj    — adj[i] = [(cost, j, waypoints), ...]
-      zone   — Shapely union of bead footprints (for the crosses() check)
     """
     if not HAS_SHAPELY or not paths:
         return [], [], None
@@ -485,27 +487,52 @@ def build_path_graph(paths, line_w):
     for pts in paths:
         if len(pts) < 2:
             continue
-        si = len(nodes);  nodes.append(tuple(pts[0]));  adj.append([])
-        ei = len(nodes);  nodes.append(tuple(pts[-1])); adj.append([])
 
-        L = sum(math.hypot(pts[k+1][0] - pts[k][0], pts[k+1][1] - pts[k][1])
-                for k in range(len(pts) - 1))
+        # --- Determine sample indices along this path -------------------------
+        sample_idx = [0]
+        accum = 0.0
+        for k in range(1, len(pts)):
+            accum += math.hypot(pts[k][0] - pts[k-1][0], pts[k][1] - pts[k-1][1])
+            if accum >= _SAMPLE_MM:
+                sample_idx.append(k)
+                accum = 0.0
+        if sample_idx[-1] != len(pts) - 1:
+            sample_idx.append(len(pts) - 1)
 
-        # Along-path edges carry the intermediate curve points as waypoints.
-        fwd_wpts = [tuple(p) for p in pts[1:-1]]
-        rev_wpts = [tuple(p) for p in pts[-2:0:-1]]
-        adj[si].append((L, ei, fwd_wpts))
-        adj[ei].append((L, si, rev_wpts))
+        # --- Add a graph node for each sample point ---------------------------
+        seg_node_ids = []
+        for si in sample_idx:
+            nid = len(nodes)
+            nodes.append(tuple(pts[si]))
+            adj.append([])
+            seg_node_ids.append(nid)
+
+        # --- Connect consecutive sampled nodes with curve-segment edges -------
+        for seg_i in range(len(seg_node_ids) - 1):
+            na  = seg_node_ids[seg_i]
+            nb  = seg_node_ids[seg_i + 1]
+            ia  = sample_idx[seg_i]
+            ib  = sample_idx[seg_i + 1]
+            seg_pts = pts[ia : ib + 1]   # slice including both boundary points
+            L = sum(math.hypot(seg_pts[k+1][0] - seg_pts[k][0],
+                               seg_pts[k+1][1] - seg_pts[k][1])
+                    for k in range(len(seg_pts) - 1))
+            fwd = [tuple(p) for p in seg_pts[1:-1]]
+            rev = [tuple(p) for p in seg_pts[-2:0:-1]]
+            adj[na].append((L, nb, fwd))
+            adj[nb].append((L, na, rev))
 
     n = len(nodes)
 
-    # Short direct jumps between nearby endpoints (no Shapely check needed).
+    # Short direct jumps between any two nodes closer than _MAX_JUMP mm.
     for i in range(n):
         for j in range(i + 1, n):
             d = math.hypot(nodes[j][0] - nodes[i][0], nodes[j][1] - nodes[i][1])
             if 0 < d <= _MAX_JUMP:
                 adj[i].append((d, j, []))
                 adj[j].append((d, i, []))
+
+    return nodes, adj, zone
 
     return nodes, adj, zone
 
