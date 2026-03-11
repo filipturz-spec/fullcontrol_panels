@@ -442,53 +442,60 @@ def sort_paths(paths, start=(0.0, 0.0)):
     return result
 
 
-# ── Travel-move collision avoidance (grid A*) ─────────────────────────────────
+# ── Travel-move routing (prefer on-bead paths) ────────────────────────────────
+# "Avoid crossing perimeters" for a partition screen means routing travel moves
+# ON TOP OF already-printed beads rather than through open air.  Ooze that
+# drops while travelling over an existing bead lands on its top face; ooze
+# in open air sticks to the side of the nearest bead — that's the blob problem.
+#
+# Implementation: weighted A* on a regular grid.
+#   • Cells that overlap a printed bead  → cost 1  (preferred highway)
+#   • Empty cells                        → cost 1 × PENALTY  (expensive detour)
+# A* will route over beads whenever doing so is cheaper than cutting through air.
+
+TRAVEL_PENALTY = 5.0   # how much more expensive open-air travel is vs on-bead
 
 def build_travel_grid(paths, line_w, W_mm, H_mm):
     """
-    Rasterise all printed beads onto a regular grid.
-    Returns (blocked: set of (col,row), cols, rows, cell_size).
-    A cell is blocked when it overlaps any printed bead.
-    Cell size equals the line width (minimum 3 mm) so a single bead
-    exactly fills one cell — travel through a cell means crossing a bead.
+    Rasterise printed beads onto a grid and return
+    (printed_set, zone, cols, rows, cell_size).
+    printed_set  — (col, row) cells that overlap a bead (low-cost travel).
+    zone         — Shapely union used for the fast direct-path check.
     """
     if not HAS_SHAPELY or not paths:
-        return set(), 0, 0, 1.0
+        return set(), None, 0, 0, 1.0
 
     cell = max(line_w, 3.0)
     cols = int(math.ceil(W_mm / cell)) + 2
     rows = int(math.ceil(H_mm / cell)) + 2
 
-    # Build union of bead footprints once, then rasterise.
     bufs = [LineString(pts).buffer(line_w * 0.5) for pts in paths if len(pts) >= 2]
     if not bufs:
-        return set(), cols, rows, cell
+        return set(), None, cols, rows, cell
     zone = unary_union(bufs)
 
-    blocked = set()
+    printed = set()
     for c in range(cols):
         for r in range(rows):
-            cell_box = box(c * cell, r * cell, (c + 1) * cell, (r + 1) * cell)
-            if zone.intersects(cell_box):
-                blocked.add((c, r))
+            if zone.intersects(box(c * cell, r * cell, (c + 1) * cell, (r + 1) * cell)):
+                printed.add((c, r))
 
-    return blocked, cols, rows, cell
+    return printed, zone, cols, rows, cell
 
 
-def route_travel(A, B, blocked, cols, rows, cell_size, printed_zone):
+def route_travel(A, B, printed, zone, cols, rows, cell_size):
     """
-    A* pathfinding on the pre-built blocked grid to route a travel move from
-    A to B without crossing already-printed beads ('avoid crossing perimeters').
-
-    Falls back to the direct segment when no routing is needed or no clear
-    path exists (e.g. the destination is completely surrounded).
+    Route a travel move from A to B using weighted A*.
+    Prefers paths over already-printed beads (cost 1) over open air
+    (cost TRAVEL_PENALTY) so ooze lands on bead tops, not on sides.
+    Falls back to direct travel when no routing is needed or grid is absent.
     """
-    if not HAS_SHAPELY or printed_zone is None or not blocked:
+    if not HAS_SHAPELY or zone is None:
         return [A, B]
 
     direct = LineString([A, B])
-    if not direct.crosses(printed_zone):
-        return [A, B]   # direct is already clean
+    if not direct.crosses(zone):
+        return [A, B]   # direct path stays within or outside printed zone — OK
 
     def to_grid(pt):
         return (max(0, min(cols - 1, int(pt[0] / cell_size))),
@@ -497,30 +504,11 @@ def route_travel(A, B, blocked, cols, rows, cell_size, printed_zone):
     def to_world(c, r):
         return (c * cell_size + cell_size * 0.5, r * cell_size + cell_size * 0.5)
 
-    ga = to_grid(A)
-    gb = to_grid(B)
-
+    ga, gb = to_grid(A), to_grid(B)
     if ga == gb:
         return [A, B]
 
-    # If start or end cells are blocked, find the nearest open neighbour.
-    def nearest_open(gc):
-        if gc not in blocked:
-            return gc
-        for d in range(1, 10):
-            for dc in range(-d, d + 1):
-                for dr in range(-d, d + 1):
-                    if abs(dc) != d and abs(dr) != d:
-                        continue
-                    nb = (gc[0] + dc, gc[1] + dr)
-                    if 0 <= nb[0] < cols and 0 <= nb[1] < rows and nb not in blocked:
-                        return nb
-        return gc
-
-    ga = nearest_open(ga)
-    gb = nearest_open(gb)
-
-    # A* with 8-connectivity.
+    # Weighted A* — every cell is reachable; cost depends on whether it's printed.
     INF = float('inf')
     g_score  = {ga: 0.0}
     came_from = {}
@@ -538,19 +526,20 @@ def route_travel(A, B, blocked, cols, rows, cell_size, printed_zone):
                 nb = (cur[0] + dc, cur[1] + dr)
                 if not (0 <= nb[0] < cols and 0 <= nb[1] < rows):
                     continue
-                if nb in blocked:
-                    continue
-                ng = cur_g + math.hypot(dc, dr)
+                step = math.hypot(dc, dr)
+                # Penalise moving INTO an empty (non-printed) cell.
+                if nb not in printed:
+                    step *= TRAVEL_PENALTY
+                ng = cur_g + step
                 if ng < g_score.get(nb, INF):
                     g_score[nb]  = ng
                     came_from[nb] = cur
-                    heapq.heappush(open_set,
-                        (ng + math.hypot(gb[0] - nb[0], gb[1] - nb[1]), nb))
+                    h = math.hypot(gb[0] - nb[0], gb[1] - nb[1])
+                    heapq.heappush(open_set, (ng + h, nb))
 
     if gb not in came_from and ga != gb:
-        return [A, B]   # no path found
+        return [A, B]
 
-    # Reconstruct grid path.
     grid_path, cur = [], gb
     while cur != ga:
         grid_path.append(cur)
@@ -560,13 +549,12 @@ def route_travel(A, B, blocked, cols, rows, cell_size, printed_zone):
     grid_path.append(ga)
     grid_path.reverse()
 
-    # Convert to world coords, keeping only direction-change points.
+    # Convert grid path → world coords, keeping only direction-change waypoints.
     world_path = [A]
     for i in range(1, len(grid_path) - 1):
         p, n = grid_path[i - 1], grid_path[i + 1]
-        dc1 = grid_path[i][0] - p[0]; dr1 = grid_path[i][1] - p[1]
-        dc2 = n[0] - grid_path[i][0]; dr2 = n[1] - grid_path[i][1]
-        if (dc1, dr1) != (dc2, dr2):
+        if (grid_path[i][0] - p[0], grid_path[i][1] - p[1]) != \
+           (n[0] - grid_path[i][0], n[1] - grid_path[i][1]):
             world_path.append(to_world(*grid_path[i]))
     world_path.append(B)
     return world_path
@@ -633,16 +621,9 @@ def build_gcode(cfg, layers, app):
         paths  = trim_overlaps(paths, cfg['lineW'])
         sorted_paths = sort_paths(paths, sort_start)
 
-        # Build printed zone + travel grid once per layer.
-        blocked, grid_cols, grid_rows, cell_size = \
+        # Build printed-bead grid + zone once per layer (reused for every travel move).
+        printed, printed_zone, grid_cols, grid_rows, cell_size = \
             build_travel_grid(paths, cfg['lineW'], W_mm, H_mm)
-        # A lightweight polygon union for the fast direct-path check.
-        if HAS_SHAPELY and paths:
-            _bufs = [LineString(pts).buffer(cfg['lineW'] * 0.5)
-                     for pts in paths if len(pts) >= 2]
-            printed_zone = unary_union(_bufs) if _bufs else None
-        else:
-            printed_zone = None
 
         z = f3((layer_idx + 1) * cfg['layerH'])
         out += [';LAYER_CHANGE', f';Z:{z}', 'G92 E0',
@@ -662,8 +643,8 @@ def build_gcode(cfg, layers, app):
 
             # Route travel so it avoids crossing bead sides.
             travel_pts = route_travel((cx, cy), (x0, y0),
-                                      blocked, grid_cols, grid_rows, cell_size,
-                                      printed_zone)
+                                      printed, printed_zone,
+                                      grid_cols, grid_rows, cell_size)
             if len(travel_pts) > 2:
                 # Intermediate waypoints (first is current pos, last is x0/y0).
                 for wx, wy in travel_pts[1:-1]:
