@@ -444,144 +444,139 @@ def sort_paths(paths, start=(0.0, 0.0)):
 
 # ── Travel routing via existing path curves ───────────────────────────────────
 #
-# Travel moves are routed ALONG already-generated path segments.  Those curves
-# are smooth, they sit exactly on printed beads, and traversing them without
-# extruding is invisible.  The same segment may be traversed by multiple travel
-# moves — that is fine and desirable.
+# Every vertex of every printed path becomes a graph node.  Edges:
 #
-# Graph structure (built once per layer, reused for every travel move):
-#   Nodes  — sampled at regular intervals (~_SAMPLE_MM mm) along every path,
-#             so any travel move can "board" a path near its closest point —
-#             not only at the far-away endpoints.
-#   Edges  — along-segment: connects consecutive sampled nodes with the
-#             exact curve points as waypoints → smooth motion.
-#           — short direct jump: between any two nearby nodes (≤ _MAX_JUMP mm),
-#             no Shapely check (used for cheap boarding transitions).
+#   along-path  — adjacent vertices on the same path (both directions),
+#                 cost = arc length.  Traversal follows exact printed coords.
 #
-# For each travel A→B the two endpoints are added temporarily and connected
-# to their K nearest graph nodes (Shapely penalty for open-air links).
-# Dijkstra finds the minimum-cost route.
+#   tiny hop    — between nodes on different paths that are ≤ line_w×_HOP_FACTOR
+#                 apart AND whose connecting segment does NOT cross the printed
+#                 zone; cost = distance × _TRAVEL_PENALTY.
+#
+# There are NO free-space edges beyond line_w×_HOP_FACTOR.  Any longer gap
+# must be bridged by boarding a printed path and following its coordinates.
+# The same path may be traversed multiple times; that is fine and desirable.
 
-_TRAVEL_PENALTY = 5.0   # open-air cost multiplier vs on-bead travel
-_K_NEAR         = 20    # nearest nodes checked for A/B connections
-_MAX_JUMP       = 50.0  # mm — max gap for a free direct jump between nodes
-_SAMPLE_MM      = 25.0  # mm — node sampling interval along each path
+_TRAVEL_PENALTY = 5.0   # cost multiplier for tiny hops vs on-bead travel
+_K_NEAR         = 20    # nearest candidates checked when connecting A/B
+_HOP_FACTOR     = 3.0   # max hop distance = line_w × this
 
 
 def build_path_graph(paths, line_w):
     """
-    Pre-build the path graph for travel routing.
-    Nodes are sampled every _SAMPLE_MM mm along every path, giving the
-    router fine-grained boarding points on long paths like the border.
-    Returns (nodes, adj, zone).
+    Build the travel graph for one layer.
+    Returns (nodes, adj, zone):
+      nodes — list of (x, y) tuples, one per path vertex
+      adj   — list of edge lists; each edge is (cost, neighbor_idx)
+      zone  — Shapely union of path buffers
     """
     if not HAS_SHAPELY or not paths:
         return [], [], None
 
-    bufs = [LineString(pts).buffer(line_w * 0.5) for pts in paths if len(pts) >= 2]
-    zone = unary_union(bufs) if bufs else None
+    valid = [p for p in paths if len(p) >= 2]
+    if not valid:
+        return [], [], None
 
-    nodes = []
-    adj   = []
+    bufs = [LineString(p).buffer(line_w * 0.5) for p in valid]
+    zone = unary_union(bufs)
 
-    for pts in paths:
-        if len(pts) < 2:
-            continue
+    max_hop = line_w * _HOP_FACTOR
+    nodes   = []
+    adj     = []
 
-        # --- Determine sample indices along this path -------------------------
-        sample_idx = [0]
-        accum = 0.0
-        for k in range(1, len(pts)):
-            accum += math.hypot(pts[k][0] - pts[k-1][0], pts[k][1] - pts[k-1][1])
-            if accum >= _SAMPLE_MM:
-                sample_idx.append(k)
-                accum = 0.0
-        if sample_idx[-1] != len(pts) - 1:
-            sample_idx.append(len(pts) - 1)
-
-        # --- Add a graph node for each sample point ---------------------------
-        seg_node_ids = []
-        for si in sample_idx:
-            nid = len(nodes)
-            nodes.append(tuple(pts[si]))
+    for pts in valid:
+        start = len(nodes)
+        for pt in pts:
+            nodes.append(tuple(pt))
             adj.append([])
-            seg_node_ids.append(nid)
+        end = len(nodes) - 1
+        # Along-path edges both directions; cost = arc length (on-bead, ×1)
+        for i in range(start, end):
+            d = math.hypot(nodes[i+1][0] - nodes[i][0],
+                           nodes[i+1][1] - nodes[i][1])
+            if d > 0:
+                adj[i    ].append((d, i + 1))
+                adj[i + 1].append((d, i))
 
-        # --- Connect consecutive sampled nodes with curve-segment edges -------
-        for seg_i in range(len(seg_node_ids) - 1):
-            na  = seg_node_ids[seg_i]
-            nb  = seg_node_ids[seg_i + 1]
-            ia  = sample_idx[seg_i]
-            ib  = sample_idx[seg_i + 1]
-            seg_pts = pts[ia : ib + 1]   # slice including both boundary points
-            L = sum(math.hypot(seg_pts[k+1][0] - seg_pts[k][0],
-                               seg_pts[k+1][1] - seg_pts[k][1])
-                    for k in range(len(seg_pts) - 1))
-            fwd = [tuple(p) for p in seg_pts[1:-1]]
-            rev = [tuple(p) for p in seg_pts[-2:0:-1]]
-            adj[na].append((L, nb, fwd))
-            adj[nb].append((L, na, rev))
+    # Spatial grid for efficient tiny-hop discovery
+    cell = max(max_hop, 1.0)
+    grid: dict = {}
+    for i, (x, y) in enumerate(nodes):
+        key = (int(x / cell), int(y / cell))
+        grid.setdefault(key, []).append(i)
 
-    n = len(nodes)
-
-    # Short direct jumps between any two nodes closer than _MAX_JUMP mm.
-    for i in range(n):
-        for j in range(i + 1, n):
-            d = math.hypot(nodes[j][0] - nodes[i][0], nodes[j][1] - nodes[i][1])
-            if 0 < d <= _MAX_JUMP:
-                adj[i].append((d, j, []))
-                adj[j].append((d, i, []))
+    # Tiny-hop edges: nearby nodes whose hop segment stays on printed beads
+    for i, (xi, yi) in enumerate(nodes):
+        gx, gy = int(xi / cell), int(yi / cell)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for j in grid.get((gx + dx, gy + dy), []):
+                    if j <= i:
+                        continue
+                    xj, yj = nodes[j]
+                    d = math.hypot(xj - xi, yj - yi)
+                    if 0 < d <= max_hop:
+                        hop = LineString([(xi, yi), (xj, yj)])
+                        if not hop.crosses(zone):
+                            c = d * _TRAVEL_PENALTY
+                            adj[i].append((c, j))
+                            adj[j].append((c, i))
 
     return nodes, adj, zone
 
-    return nodes, adj, zone
 
+def route_travel(A, B, base_nodes, base_adj, zone, line_w):
+    """
+    Route a travel move from A to B.
+    Travel strictly follows printed path coordinates; only tiny open-air
+    hops ≤ line_w × _HOP_FACTOR are permitted between different paths.
+    """
+    max_hop  = line_w * _HOP_FACTOR
+    d_direct = math.hypot(B[0] - A[0], B[1] - A[1])
 
-def route_travel(A, B, base_nodes, base_adj, zone):
-    """
-    Route a travel move from A to B using the pre-built path graph.
-    Returns a list of (x, y) waypoints (including A and B) that follows
-    smooth existing curves, avoiding open-air moves wherever possible.
-    Falls back to direct travel when no routing is needed or helpful.
-    """
+    # Trivial: already within hop distance and the hop is clean
+    if d_direct <= max_hop:
+        if not HAS_SHAPELY or zone is None:
+            return [A, B]
+        if not LineString([A, B]).crosses(zone):
+            return [A, B]
+
     if not HAS_SHAPELY or zone is None or not base_nodes:
         return [A, B]
 
-    direct = LineString([A, B])
-    if not direct.crosses(zone):
-        return [A, B]   # direct path already clean
+    # Prepend A (idx 0) and B (idx 1); base_nodes shift by OFF=2
+    OFF       = 2
+    all_nodes = [A, B] + base_nodes
+    n         = len(all_nodes)
+    all_adj   = [[] for _ in range(n)]
 
-    # Prepend A (0) and B (1); existing nodes shift by 2.
-    OFF   = 2
-    nodes = [A, B] + list(base_nodes)
-    n     = len(nodes)
-
-    adj = [[] for _ in range(n)]
     for i, edges in enumerate(base_adj):
-        for cost, j, wpts in edges:
-            adj[i + OFF].append((cost, j + OFF, wpts))
+        for cost, j in edges:
+            all_adj[i + OFF].append((cost, j + OFF))
 
-    # Penalised direct A→B fallback (always available, last resort).
-    d_ab = math.hypot(B[0] - A[0], B[1] - A[1])
-    adj[0].append((d_ab * _TRAVEL_PENALTY, 1, []))
-
-    # Connect A and B to their K nearest graph nodes.
+    # Connect A and B to nearby graph nodes via clean hops only
     for u_idx, u_pt in ((0, A), (1, B)):
         ranked = sorted(
-            (math.hypot(nodes[v][0] - u_pt[0], nodes[v][1] - u_pt[1]), v)
-            for v in range(OFF, n)
+            (math.hypot(base_nodes[v][0] - u_pt[0],
+                        base_nodes[v][1] - u_pt[1]), v)
+            for v in range(len(base_nodes))
         )
         for d, v in ranked[:_K_NEAR]:
-            seg  = LineString([u_pt, nodes[v]])
-            cost = d * (_TRAVEL_PENALTY if seg.crosses(zone) else 1.0)
-            adj[u_idx].append((cost, v, []))
-            adj[v].append((cost, u_idx, []))
+            if d > max_hop:
+                break
+            seg = LineString([u_pt, base_nodes[v]])
+            if not seg.crosses(zone):
+                c = d * _TRAVEL_PENALTY
+                all_adj[u_idx    ].append((c, v + OFF))
+                all_adj[v + OFF  ].append((c, u_idx))
 
-    # Dijkstra from A (0) to B (1).
-    INF    = float('inf')
-    dist   = [INF] * n
-    prev_v = [-1]   * n
-    prev_w = [None] * n
+    # Very expensive direct fallback (last resort, avoids hard failure)
+    all_adj[0].append((d_direct * _TRAVEL_PENALTY * 50, 1))
+
+    # Dijkstra from A (0) to B (1)
+    INF  = float('inf')
+    dist = [INF] * n
+    prev = [-1]  * n
     dist[0] = 0.0
     pq = [(0.0, 0)]
 
@@ -591,31 +586,27 @@ def route_travel(A, B, base_nodes, base_adj, zone):
             break
         if d > dist[u]:
             continue
-        for cost, v, wpts in adj[u]:
+        for cost, v in all_adj[u]:
             nd = d + cost
             if nd < dist[v]:
-                dist[v]   = nd
-                prev_v[v] = u
-                prev_w[v] = wpts
+                dist[v] = nd
+                prev[v] = u
                 heapq.heappush(pq, (nd, v))
 
     if dist[1] >= INF:
         return [A, B]
 
-    # Reconstruct.
-    segs, cur = [], 1
+    # Reconstruct path as coordinate list
+    idx_path = []
+    cur = 1
     while cur != 0:
-        if prev_v[cur] == -1:
+        idx_path.append(cur)
+        cur = prev[cur]
+        if cur == -1:
             return [A, B]
-        segs.append(prev_w[cur] or [])
-        cur = prev_v[cur]
-    segs.reverse()
-
-    result = [A]
-    for wpts in segs:
-        result.extend(wpts)
-    result.append(B)
-    return result
+    idx_path.append(0)
+    idx_path.reverse()
+    return [all_nodes[i] for i in idx_path]
 
 
 # ── G-code builder ────────────────────────────────────────────────────────────
@@ -701,7 +692,8 @@ def build_gcode(cfg, layers, app):
 
             # Route travel so it avoids crossing bead sides.
             travel_pts = route_travel((cx, cy), (x0, y0),
-                                      graph_nodes, graph_adj, printed_zone)
+                                      graph_nodes, graph_adj, printed_zone,
+                                      cfg['lineW'])
             if len(travel_pts) > 2:
                 # Intermediate waypoints (first is current pos, last is x0/y0).
                 for wx, wy in travel_pts[1:-1]:
