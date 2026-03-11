@@ -134,8 +134,8 @@ canvas{display:block;background:#1e1c18}
     <div class="sb-sec">
       <div class="sec-title">Panel</div>
       <div class="panel-grid">
-        <div class="pi"><label>Width (cm)</label><input id="s-pw" type="number" value="120" min="10" max="600"></div>
-        <div class="pi"><label>Height (cm)</label><input id="s-ph" type="number" value="180" min="10" max="600"></div>
+        <div class="pi"><label>Width (cm)</label><input id="s-pw" type="number" value="120" min="10" max="600" step="0.5"></div>
+        <div class="pi"><label>Height (cm)</label><input id="s-ph" type="number" value="180" min="10" max="600" step="0.5"></div>
       </div>
     </div>
 
@@ -1216,8 +1216,14 @@ function loadJSON(file) {
       _uid = layers.reduce((m, l) => Math.max(m, l.id), 0) + 1;
       document.getElementById('s-pw').value        = App.panelW;
       document.getElementById('s-ph').value        = App.panelH;
+      updatePanelStep('s-pw'); updatePanelStep('s-ph');
       document.getElementById('warp-slider').value = App.warpAmount;
       document.getElementById('warp-num').value    = App.warpAmount;
+      if (d.cfg && d.cfg.depth) {
+        document.getElementById('fab-depth').value = d.cfg.depth;
+        App.panelDepth = d.cfg.depth / 10;
+        document.getElementById('s-depth').value   = App.panelDepth;
+      }
       resizeCanvas(); fitCanvas(); renderLayers(); fullRedraw(); rebuild3DPanel();
     } catch (err) { alert('Load error: ' + err.message); }
   };
@@ -1238,16 +1244,33 @@ window.addEventListener('DOMContentLoaded', () => {
     renderLayers();
   });
 
+  // Use 1 mm (0.1 cm) steps for panels narrower than 30 cm, 5 mm (0.5 cm) otherwise.
+  const updatePanelStep = id => {
+    const el = document.getElementById(id);
+    el.step = (+el.value < 30) ? '0.1' : '0.5';
+  };
   const onPanel = () => {
     App.panelW = Math.max(10, +document.getElementById('s-pw').value || 120);
     App.panelH = Math.max(10, +document.getElementById('s-ph').value || 180);
+    updatePanelStep('s-pw'); updatePanelStep('s-ph');
     resizeCanvas(); fitCanvas(); fullRedraw(); rebuild3DPanel();
   };
   ['s-pw', 's-ph'].forEach(id => document.getElementById(id).addEventListener('change', onPanel));
+  updatePanelStep('s-pw'); updatePanelStep('s-ph');
 
+  // s-depth (cm) and fab-depth (mm) represent the same physical dimension — keep in sync.
   document.getElementById('s-depth').addEventListener('change', e => {
     App.panelDepth = Math.max(1, Math.min(50, +e.target.value || 3));
     e.target.value = App.panelDepth;
+    document.getElementById('fab-depth').value = App.panelDepth * 10;
+    rebuild3DPanel(); refresh3DLines();
+  });
+  document.getElementById('fab-depth').addEventListener('change', e => {
+    const mm = Math.max(1, Math.min(500, +e.target.value || 30));
+    e.target.value = mm;
+    const cm = mm / 10;
+    App.panelDepth = cm;
+    document.getElementById('s-depth').value = cm;
     rebuild3DPanel(); refresh3DLines();
   });
 

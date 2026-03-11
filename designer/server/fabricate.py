@@ -17,6 +17,7 @@ Dependencies
     # numpy/plotly not needed — this script is self-contained
 """
 
+import heapq
 import json
 import math
 import sys
@@ -441,6 +442,93 @@ def sort_paths(paths, start=(0.0, 0.0)):
     return result
 
 
+# ── Travel-move collision avoidance ───────────────────────────────────────────
+
+def build_printed_zone(paths, line_w):
+    """Return a Shapely polygon representing all printed beads (buffered by bead radius)."""
+    if not HAS_SHAPELY or not paths:
+        return None
+    bufs = [LineString(pts).buffer(line_w * 0.5) for pts in paths if len(pts) >= 2]
+    return unary_union(bufs) if bufs else None
+
+
+def route_travel(A, B, printed_zone):
+    """
+    Find a travel path from A to B that avoids crossing the boundary of any
+    already-printed bead ('avoid crossing perimeters').
+
+    Strategy: build a visibility graph from A, B and the simplified boundary
+    vertices of printed_zone, then run Dijkstra.  Edges that would cross into
+    the interior of a bead are forbidden; edges that stay outside OR stay
+    fully inside (travelling on top of an existing bead) are allowed.
+
+    Falls back to the direct segment if no cleaner route is found or the
+    geometry is too complex to process quickly.
+    """
+    if not HAS_SHAPELY or printed_zone is None:
+        return [A, B]
+
+    direct = LineString([A, B])
+    if not direct.crosses(printed_zone):
+        return [A, B]   # already clean
+
+    # Simplify boundary to keep vertex count manageable.
+    zone = printed_zone.simplify(1.5, preserve_topology=True)
+
+    waypoints = [A, B]
+    geoms = list(zone.geoms) if hasattr(zone, 'geoms') else [zone]
+    for g in geoms:
+        if g.geom_type == 'Polygon':
+            waypoints.extend(list(g.exterior.coords)[:-1])
+
+    if len(waypoints) > 150:
+        return [A, B]   # too complex – fall back to direct travel
+
+    n = len(waypoints)
+
+    # Build adjacency list: an edge (i→j) is valid when the segment does not
+    # cross (enter then exit) the printed zone.  Segments that lie entirely
+    # inside or entirely outside are both permitted.
+    adj = [[] for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1, n):
+            seg = LineString([waypoints[i], waypoints[j]])
+            if not seg.crosses(zone):
+                d = math.hypot(waypoints[j][0] - waypoints[i][0],
+                               waypoints[j][1] - waypoints[i][1])
+                adj[i].append((d, j))
+                adj[j].append((d, i))
+
+    # Dijkstra from A (index 0) to B (index 1).
+    INF = float('inf')
+    dist = [INF] * n
+    prev = [-1] * n
+    dist[0] = 0.0
+    pq = [(0.0, 0)]
+
+    while pq:
+        d, u = heapq.heappop(pq)
+        if d > dist[u]:
+            continue
+        for w, v in adj[u]:
+            nd = d + w
+            if nd < dist[v]:
+                dist[v] = nd
+                prev[v] = u
+                heapq.heappush(pq, (nd, v))
+
+    if dist[1] == INF:
+        return [A, B]   # no clean route found
+
+    path = []
+    cur = 1
+    while cur != -1:
+        path.append(waypoints[cur])
+        cur = prev[cur]
+    path.reverse()
+    return path
+
+
 # ── G-code builder ────────────────────────────────────────────────────────────
 
 def build_gcode(cfg, layers, app):
@@ -502,6 +590,9 @@ def build_gcode(cfg, layers, app):
         paths  = trim_overlaps(paths, cfg['lineW'])
         sorted_paths = sort_paths(paths, sort_start)
 
+        # Build the printed zone once per layer for travel-move avoidance.
+        printed_zone = build_printed_zone(paths, cfg['lineW'])
+
         z = f3((layer_idx + 1) * cfg['layerH'])
         out += [';LAYER_CHANGE', f';Z:{z}', 'G92 E0',
                 f'G1 Z{z} F{fmm(min(cfg["printV"], 10))}']
@@ -518,6 +609,13 @@ def build_gcode(cfg, layers, app):
             if primed and retract > 0:
                 out.append(f'G1 E-{f3(retract)} F{fmm(cfg["travelV"])}')
 
+            # Route travel so it avoids crossing bead sides.
+            travel_pts = route_travel((cx, cy), (x0, y0), printed_zone)
+            if len(travel_pts) > 2:
+                # Intermediate waypoints (first is current pos, last is x0/y0).
+                for wx, wy in travel_pts[1:-1]:
+                    gwy = H_mm - wy + y_offset
+                    out.append(f'G0 F{fmm(cfg["travelV"])} X{f3(wx)} Y{f3(gwy)}')
             out.append(f'G0 F{fmm(cfg["travelV"])} X{f3(x0)} Y{f3(gy0)}')
 
             if retract > 0:
