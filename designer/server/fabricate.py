@@ -604,6 +604,101 @@ def route_travel(A, B, base_nodes, base_adj, zone, line_w):
     return [all_nodes[i] for i in idx_path]
 
 
+
+# ── Graph-aware greedy layer planner ─────────────────────────────────────────
+
+def plan_layer(paths, nodes, adj, line_w, start):
+    """
+    Order paths and choose their print direction using actual routed travel
+    cost — not straight-line Euclidean distance.
+
+    At each step a single-source Dijkstra is run from the current head
+    position using the pre-built path graph.  The unused path whose nearer
+    endpoint has the lowest true travel cost is selected next, and the path
+    is reversed if the endpoint is its last vertex.
+
+    Falls back to Euclidean greedy (sort_paths) when no graph is available.
+    """
+    if not paths:
+        return []
+    if not nodes:
+        return sort_paths(paths, start)
+
+    max_hop = line_w * _HOP_FACTOR
+
+    # Fast endpoint lookup: coordinate → list of node indices
+    pt_nodes: dict = {}
+    for idx, pt in enumerate(nodes):
+        pt_nodes.setdefault(pt, []).append(idx)
+
+    used   = [False] * len(paths)
+    result = []
+    cur    = tuple(start)
+
+    for _ in range(len(paths)):
+        # ── Single-source Dijkstra from cur ──────────────────────────────────
+        # Seed from every graph node reachable within max_hop.
+        # If cur is itself a graph node its hop distance is 0, so it seeds
+        # with cost 0 — equivalent to a standard Dijkstra from that node.
+        INF  = float('inf')
+        dist = [INF] * len(nodes)
+        pq   = []
+
+        ranked = sorted(
+            (math.hypot(nodes[v][0] - cur[0], nodes[v][1] - cur[1]), v)
+            for v in range(len(nodes))
+        )
+        for d_hop, v in ranked[:_K_NEAR]:
+            if d_hop > max_hop:
+                break
+            seed = d_hop * _TRAVEL_PENALTY
+            if seed < dist[v]:
+                dist[v] = seed
+                heapq.heappush(pq, (seed, v))
+
+        while pq:
+            d, u = heapq.heappop(pq)
+            if d > dist[u]:
+                continue
+            for cost, v in adj[u]:
+                nd = d + cost
+                if nd < dist[v]:
+                    dist[v] = nd
+                    heapq.heappush(pq, (nd, v))
+
+        # ── Pick cheapest unused path + direction ─────────────────────────────
+        best_cost = INF
+        best_i    = -1
+        best_rev  = False
+
+        for i, pts in enumerate(paths):
+            if used[i]:
+                continue
+            cs = min((dist[idx] for idx in pt_nodes.get(tuple(pts[0]),  [])), default=INF)
+            ce = min((dist[idx] for idx in pt_nodes.get(tuple(pts[-1]), [])), default=INF)
+            if cs < best_cost:
+                best_cost, best_i, best_rev = cs, i, False
+            if ce < best_cost:
+                best_cost, best_i, best_rev = ce, i, True
+
+        if best_i == -1:
+            # Fallback: Euclidean nearest among remaining paths
+            for i, pts in enumerate(paths):
+                if used[i]:
+                    continue
+                for rev, ep in ((False, tuple(pts[0])), (True, tuple(pts[-1]))):
+                    d = math.hypot(ep[0] - cur[0], ep[1] - cur[1])
+                    if d < best_cost:
+                        best_cost, best_i, best_rev = d, i, rev
+
+        used[best_i] = True
+        pts = list(reversed(paths[best_i])) if best_rev else list(paths[best_i])
+        result.append(pts)
+        cur = tuple(pts[-1])
+
+    return result
+
+
 # ── G-code builder ────────────────────────────────────────────────────────────
 
 def build_gcode(cfg, layers, app):
@@ -663,11 +758,14 @@ def build_gcode(cfg, layers, app):
         t      = 1.0 if num_layers <= 1 else layer_idx / (num_layers - 1)
         paths  = extract_paths_at(t, cfg, layers, app)
         paths  = trim_overlaps(paths, cfg['lineW'])
-        sorted_paths = sort_paths(paths, sort_start)
 
-        # Build path-endpoint graph once per layer; reused for every travel move.
+        # Build graph first — plan_layer uses it for cost-aware ordering.
         graph_nodes, graph_adj, printed_zone = \
             build_path_graph(paths, cfg['lineW'])
+
+        # Order paths by true routed travel cost, not Euclidean distance.
+        sorted_paths = plan_layer(paths, graph_nodes, graph_adj,
+                                  cfg['lineW'], sort_start)
 
         z = f3((layer_idx + 1) * cfg['layerH'])
         out += [';LAYER_CHANGE', f';Z:{z}', 'G92 E0',
