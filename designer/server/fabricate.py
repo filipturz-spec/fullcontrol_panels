@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 try:
-    from shapely.geometry import LineString, MultiLineString, box
+    from shapely.geometry import LineString, MultiLineString
     from shapely.ops import unary_union
     HAS_SHAPELY = True
 except ImportError:
@@ -442,122 +442,153 @@ def sort_paths(paths, start=(0.0, 0.0)):
     return result
 
 
-# ── Travel-move routing (prefer on-bead paths) ────────────────────────────────
-# "Avoid crossing perimeters" for a partition screen means routing travel moves
-# ON TOP OF already-printed beads rather than through open air.  Ooze that
-# drops while travelling over an existing bead lands on its top face; ooze
-# in open air sticks to the side of the nearest bead — that's the blob problem.
+# ── Travel routing via existing path curves ───────────────────────────────────
 #
-# Implementation: weighted A* on a regular grid.
-#   • Cells that overlap a printed bead  → cost 1  (preferred highway)
-#   • Empty cells                        → cost 1 × PENALTY  (expensive detour)
-# A* will route over beads whenever doing so is cheaper than cutting through air.
+# Instead of a coarse grid, we route travel moves ALONG the already-generated
+# path segments.  Those curves are smooth, they lie exactly on printed beads,
+# and traversing them without extruding is invisible.
+#
+# Graph structure (built once per layer, reused for every travel move):
+#   Nodes  — start & end of every printed path
+#   Edges  — along-path (traverse the full curve, cost = arc length,
+#             waypoints = all intermediate points → smooth motion)
+#           — short direct jump between nearby endpoints (≤ MAX_JUMP mm)
+#
+# For each travel A→B the two endpoints are added temporarily and connected
+# to the K nearest graph nodes (with a Shapely penalty if the connection
+# crosses open air).  Dijkstra finds the minimum-cost route.
+#
+# The result is a sequence of actual curve points — no staircase artefacts.
 
-TRAVEL_PENALTY = 5.0   # how much more expensive open-air travel is vs on-bead
+_TRAVEL_PENALTY = 5.0   # open-air cost multiplier vs on-bead travel
+_K_NEAR         = 15    # how many nearest nodes to check for A/B connections
+_MAX_JUMP       = 50.0  # mm — max distance for a free jump between path endpoints
 
-def build_travel_grid(paths, line_w, W_mm, H_mm):
+
+def build_path_graph(paths, line_w):
     """
-    Rasterise printed beads onto a grid and return
-    (printed_set, zone, cols, rows, cell_size).
-    printed_set  — (col, row) cells that overlap a bead (low-cost travel).
-    zone         — Shapely union used for the fast direct-path check.
+    Pre-build the path-endpoint graph for a layer.
+    Returns (nodes, adj, zone).
+      nodes  — list of (x, y) endpoint coordinates
+      adj    — adj[i] = [(cost, j, waypoints), ...]
+      zone   — Shapely union of bead footprints (for the crosses() check)
     """
     if not HAS_SHAPELY or not paths:
-        return set(), None, 0, 0, 1.0
-
-    cell = max(line_w, 3.0)
-    cols = int(math.ceil(W_mm / cell)) + 2
-    rows = int(math.ceil(H_mm / cell)) + 2
+        return [], [], None
 
     bufs = [LineString(pts).buffer(line_w * 0.5) for pts in paths if len(pts) >= 2]
-    if not bufs:
-        return set(), None, cols, rows, cell
-    zone = unary_union(bufs)
+    zone = unary_union(bufs) if bufs else None
 
-    printed = set()
-    for c in range(cols):
-        for r in range(rows):
-            if zone.intersects(box(c * cell, r * cell, (c + 1) * cell, (r + 1) * cell)):
-                printed.add((c, r))
+    nodes = []
+    adj   = []
 
-    return printed, zone, cols, rows, cell
+    for pts in paths:
+        if len(pts) < 2:
+            continue
+        si = len(nodes);  nodes.append(tuple(pts[0]));  adj.append([])
+        ei = len(nodes);  nodes.append(tuple(pts[-1])); adj.append([])
+
+        L = sum(math.hypot(pts[k+1][0] - pts[k][0], pts[k+1][1] - pts[k][1])
+                for k in range(len(pts) - 1))
+
+        # Along-path edges carry the intermediate curve points as waypoints.
+        fwd_wpts = [tuple(p) for p in pts[1:-1]]
+        rev_wpts = [tuple(p) for p in pts[-2:0:-1]]
+        adj[si].append((L, ei, fwd_wpts))
+        adj[ei].append((L, si, rev_wpts))
+
+    n = len(nodes)
+
+    # Short direct jumps between nearby endpoints (no Shapely check needed).
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = math.hypot(nodes[j][0] - nodes[i][0], nodes[j][1] - nodes[i][1])
+            if 0 < d <= _MAX_JUMP:
+                adj[i].append((d, j, []))
+                adj[j].append((d, i, []))
+
+    return nodes, adj, zone
 
 
-def route_travel(A, B, printed, zone, cols, rows, cell_size):
+def route_travel(A, B, base_nodes, base_adj, zone):
     """
-    Route a travel move from A to B using weighted A*.
-    Prefers paths over already-printed beads (cost 1) over open air
-    (cost TRAVEL_PENALTY) so ooze lands on bead tops, not on sides.
-    Falls back to direct travel when no routing is needed or grid is absent.
+    Route a travel move from A to B using the pre-built path graph.
+    Returns a list of (x, y) waypoints (including A and B) that follows
+    smooth existing curves, avoiding open-air moves wherever possible.
+    Falls back to direct travel when no routing is needed or helpful.
     """
-    if not HAS_SHAPELY or zone is None:
+    if not HAS_SHAPELY or zone is None or not base_nodes:
         return [A, B]
 
     direct = LineString([A, B])
     if not direct.crosses(zone):
-        return [A, B]   # direct path stays within or outside printed zone — OK
+        return [A, B]   # direct path already clean
 
-    def to_grid(pt):
-        return (max(0, min(cols - 1, int(pt[0] / cell_size))),
-                max(0, min(rows - 1, int(pt[1] / cell_size))))
+    # Prepend A (0) and B (1); existing nodes shift by 2.
+    OFF   = 2
+    nodes = [A, B] + list(base_nodes)
+    n     = len(nodes)
 
-    def to_world(c, r):
-        return (c * cell_size + cell_size * 0.5, r * cell_size + cell_size * 0.5)
+    adj = [[] for _ in range(n)]
+    for i, edges in enumerate(base_adj):
+        for cost, j, wpts in edges:
+            adj[i + OFF].append((cost, j + OFF, wpts))
 
-    ga, gb = to_grid(A), to_grid(B)
-    if ga == gb:
-        return [A, B]
+    # Penalised direct A→B fallback (always available, last resort).
+    d_ab = math.hypot(B[0] - A[0], B[1] - A[1])
+    adj[0].append((d_ab * _TRAVEL_PENALTY, 1, []))
 
-    # Weighted A* — every cell is reachable; cost depends on whether it's printed.
-    INF = float('inf')
-    g_score  = {ga: 0.0}
-    came_from = {}
-    open_set  = [(math.hypot(gb[0] - ga[0], gb[1] - ga[1]), ga)]
+    # Connect A and B to their K nearest graph nodes.
+    for u_idx, u_pt in ((0, A), (1, B)):
+        ranked = sorted(
+            (math.hypot(nodes[v][0] - u_pt[0], nodes[v][1] - u_pt[1]), v)
+            for v in range(OFF, n)
+        )
+        for d, v in ranked[:_K_NEAR]:
+            seg  = LineString([u_pt, nodes[v]])
+            cost = d * (_TRAVEL_PENALTY if seg.crosses(zone) else 1.0)
+            adj[u_idx].append((cost, v, []))
+            adj[v].append((cost, u_idx, []))
 
-    while open_set:
-        _, cur = heapq.heappop(open_set)
-        if cur == gb:
+    # Dijkstra from A (0) to B (1).
+    INF    = float('inf')
+    dist   = [INF] * n
+    prev_v = [-1]   * n
+    prev_w = [None] * n
+    dist[0] = 0.0
+    pq = [(0.0, 0)]
+
+    while pq:
+        d, u = heapq.heappop(pq)
+        if u == 1:
             break
-        cur_g = g_score.get(cur, INF)
-        for dc in (-1, 0, 1):
-            for dr in (-1, 0, 1):
-                if dc == 0 and dr == 0:
-                    continue
-                nb = (cur[0] + dc, cur[1] + dr)
-                if not (0 <= nb[0] < cols and 0 <= nb[1] < rows):
-                    continue
-                step = math.hypot(dc, dr)
-                # Penalise moving INTO an empty (non-printed) cell.
-                if nb not in printed:
-                    step *= TRAVEL_PENALTY
-                ng = cur_g + step
-                if ng < g_score.get(nb, INF):
-                    g_score[nb]  = ng
-                    came_from[nb] = cur
-                    h = math.hypot(gb[0] - nb[0], gb[1] - nb[1])
-                    heapq.heappush(open_set, (ng + h, nb))
+        if d > dist[u]:
+            continue
+        for cost, v, wpts in adj[u]:
+            nd = d + cost
+            if nd < dist[v]:
+                dist[v]   = nd
+                prev_v[v] = u
+                prev_w[v] = wpts
+                heapq.heappush(pq, (nd, v))
 
-    if gb not in came_from and ga != gb:
+    if dist[1] >= INF:
         return [A, B]
 
-    grid_path, cur = [], gb
-    while cur != ga:
-        grid_path.append(cur)
-        cur = came_from.get(cur)
-        if cur is None:
+    # Reconstruct.
+    segs, cur = [], 1
+    while cur != 0:
+        if prev_v[cur] == -1:
             return [A, B]
-    grid_path.append(ga)
-    grid_path.reverse()
+        segs.append(prev_w[cur] or [])
+        cur = prev_v[cur]
+    segs.reverse()
 
-    # Convert grid path → world coords, keeping only direction-change waypoints.
-    world_path = [A]
-    for i in range(1, len(grid_path) - 1):
-        p, n = grid_path[i - 1], grid_path[i + 1]
-        if (grid_path[i][0] - p[0], grid_path[i][1] - p[1]) != \
-           (n[0] - grid_path[i][0], n[1] - grid_path[i][1]):
-            world_path.append(to_world(*grid_path[i]))
-    world_path.append(B)
-    return world_path
+    result = [A]
+    for wpts in segs:
+        result.extend(wpts)
+    result.append(B)
+    return result
 
 
 # ── G-code builder ────────────────────────────────────────────────────────────
@@ -621,9 +652,9 @@ def build_gcode(cfg, layers, app):
         paths  = trim_overlaps(paths, cfg['lineW'])
         sorted_paths = sort_paths(paths, sort_start)
 
-        # Build printed-bead grid + zone once per layer (reused for every travel move).
-        printed, printed_zone, grid_cols, grid_rows, cell_size = \
-            build_travel_grid(paths, cfg['lineW'], W_mm, H_mm)
+        # Build path-endpoint graph once per layer; reused for every travel move.
+        graph_nodes, graph_adj, printed_zone = \
+            build_path_graph(paths, cfg['lineW'])
 
         z = f3((layer_idx + 1) * cfg['layerH'])
         out += [';LAYER_CHANGE', f';Z:{z}', 'G92 E0',
@@ -643,8 +674,7 @@ def build_gcode(cfg, layers, app):
 
             # Route travel so it avoids crossing bead sides.
             travel_pts = route_travel((cx, cy), (x0, y0),
-                                      printed, printed_zone,
-                                      grid_cols, grid_rows, cell_size)
+                                      graph_nodes, graph_adj, printed_zone)
             if len(travel_pts) > 2:
                 # Intermediate waypoints (first is current pos, last is x0/y0).
                 for wx, wy in travel_pts[1:-1]:
