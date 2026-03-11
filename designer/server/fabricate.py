@@ -505,7 +505,9 @@ def build_path_graph(paths, line_w):
         key = (int(x / cell), int(y / cell))
         grid.setdefault(key, []).append(i)
 
-    # Tiny-hop edges: nearby nodes whose hop segment stays on printed beads
+    # Tiny-hop edges: all nodes within max_hop of each other.
+    # No zone-crossing check — short hops (≤ line_w × _HOP_FACTOR) are
+    # explicitly allowed by the user regardless of what they pass over.
     for i, (xi, yi) in enumerate(nodes):
         gx, gy = int(xi / cell), int(yi / cell)
         for dx in (-1, 0, 1):
@@ -516,11 +518,9 @@ def build_path_graph(paths, line_w):
                     xj, yj = nodes[j]
                     d = math.hypot(xj - xi, yj - yi)
                     if 0 < d <= max_hop:
-                        hop = LineString([(xi, yi), (xj, yj)])
-                        if not hop.crosses(zone):
-                            c = d * _TRAVEL_PENALTY
-                            adj[i].append((c, j))
-                            adj[j].append((c, i))
+                        c = d * _TRAVEL_PENALTY
+                        adj[i].append((c, j))
+                        adj[j].append((c, i))
 
     return nodes, adj, zone
 
@@ -534,12 +534,9 @@ def route_travel(A, B, base_nodes, base_adj, zone, line_w):
     max_hop  = line_w * _HOP_FACTOR
     d_direct = math.hypot(B[0] - A[0], B[1] - A[1])
 
-    # Trivial: already within hop distance and the hop is clean
+    # Short hops always allowed — user explicitly permits ≤ line_w × _HOP_FACTOR
     if d_direct <= max_hop:
-        if not HAS_SHAPELY or zone is None:
-            return [A, B]
-        if not LineString([A, B]).crosses(zone):
-            return [A, B]
+        return [A, B]
 
     if not HAS_SHAPELY or zone is None or not base_nodes:
         return [A, B]
@@ -554,7 +551,7 @@ def route_travel(A, B, base_nodes, base_adj, zone, line_w):
         for cost, j in edges:
             all_adj[i + OFF].append((cost, j + OFF))
 
-    # Connect A and B to nearby graph nodes via clean hops only
+    # Connect A and B to all graph nodes within max_hop (no crossing check)
     for u_idx, u_pt in ((0, A), (1, B)):
         ranked = sorted(
             (math.hypot(base_nodes[v][0] - u_pt[0],
@@ -564,11 +561,9 @@ def route_travel(A, B, base_nodes, base_adj, zone, line_w):
         for d, v in ranked[:_K_NEAR]:
             if d > max_hop:
                 break
-            seg = LineString([u_pt, base_nodes[v]])
-            if not seg.crosses(zone):
-                c = d * _TRAVEL_PENALTY
-                all_adj[u_idx    ].append((c, v + OFF))
-                all_adj[v + OFF  ].append((c, u_idx))
+            c = d * _TRAVEL_PENALTY
+            all_adj[u_idx    ].append((c, v + OFF))
+            all_adj[v + OFF  ].append((c, u_idx))
 
     # Very expensive direct fallback (last resort, avoids hard failure)
     all_adj[0].append((d_direct * _TRAVEL_PENALTY * 50, 1))
