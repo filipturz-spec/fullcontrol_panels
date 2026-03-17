@@ -701,6 +701,21 @@ def plan_layer(paths, nodes, adj, line_w, start):
 
 # ── G-code builder ────────────────────────────────────────────────────────────
 
+def _split_into_edges(paths):
+    """
+    Decompose every path into its individual print edges (consecutive vertex
+    pairs).  Each edge becomes an independent planning atom so the layer
+    planner can interleave or split paths freely to minimise total travel.
+    Consecutive edges of the same path still cost 0 to chain (they share an
+    endpoint node), so they will naturally run together unless a cheaper
+    ordering exists.
+    """
+    edges = []
+    for pts in paths:
+        for i in range(len(pts) - 1):
+            edges.append([tuple(pts[i]), tuple(pts[i + 1])])
+    return edges
+
 def build_gcode(cfg, layers, app):
     W_mm       = app['panelW'] * CM
     H_mm       = app['panelH'] * CM
@@ -759,13 +774,17 @@ def build_gcode(cfg, layers, app):
         paths  = extract_paths_at(t, cfg, layers, app)
         paths  = trim_overlaps(paths, cfg['lineW'])
 
-        # Build graph first — plan_layer uses it for cost-aware ordering.
+        # Build graph from full paths (every vertex is a node).
         graph_nodes, graph_adj, printed_zone = \
             build_path_graph(paths, cfg['lineW'])
 
-        # Order paths by true routed travel cost, not Euclidean distance.
-        sorted_paths = plan_layer(paths, graph_nodes, graph_adj,
-                                  cfg['lineW'], sort_start)
+        # Decompose every path into individual print edges, then sequence
+        # them using actual routed cost.  Consecutive edges of the same path
+        # share an endpoint (cost 0 to continue), so they run together
+        # naturally unless splitting / interleaving gives a shorter total.
+        print_edges   = _split_into_edges(paths)
+        sorted_paths  = plan_layer(print_edges, graph_nodes, graph_adj,
+                                   cfg['lineW'], sort_start)
 
         z = f3((layer_idx + 1) * cfg['layerH'])
         out += [';LAYER_CHANGE', f';Z:{z}', 'G92 E0',
@@ -777,25 +796,28 @@ def build_gcode(cfg, layers, app):
         for pts in sorted_paths:
             if not pts:
                 continue
-            x0, y0 = pts[0]
-            gy0    = H_mm - y0 + y_offset
+            x0, y0      = pts[0]
+            gy0         = H_mm - y0 + y_offset
+            travel_dist = math.hypot(x0 - cx, y0 - cy)
+            do_travel   = travel_dist > 1e-6
 
-            if primed and retract > 0:
-                out.append(f'G1 E-{f3(retract)} F{fmm(cfg["travelV"])}')
+            if do_travel:
+                if primed and retract > 0:
+                    out.append(f'G1 E-{f3(retract)} F{fmm(cfg["travelV"])}')
 
-            # Route travel so it avoids crossing bead sides.
-            travel_pts = route_travel((cx, cy), (x0, y0),
-                                      graph_nodes, graph_adj, printed_zone,
-                                      cfg['lineW'])
-            if len(travel_pts) > 2:
-                # Intermediate waypoints (first is current pos, last is x0/y0).
-                for wx, wy in travel_pts[1:-1]:
-                    gwy = H_mm - wy + y_offset
-                    out.append(f'G0 F{fmm(cfg["travelV"])} X{f3(wx)} Y{f3(gwy)}')
-            out.append(f'G0 F{fmm(cfg["travelV"])} X{f3(x0)} Y{f3(gy0)}')
+                # Route travel so it stays on already-printed beads.
+                travel_pts = route_travel((cx, cy), (x0, y0),
+                                          graph_nodes, graph_adj, printed_zone,
+                                          cfg['lineW'])
+                if len(travel_pts) > 2:
+                    for wx, wy in travel_pts[1:-1]:
+                        gwy = H_mm - wy + y_offset
+                        out.append(f'G0 F{fmm(cfg["travelV"])} X{f3(wx)} Y{f3(gwy)}')
+                out.append(f'G0 F{fmm(cfg["travelV"])} X{f3(x0)} Y{f3(gy0)}')
 
-            if retract > 0:
-                out.append(f'G1 E{f3(retract)} F{fmm(cfg["travelV"])}')
+                if retract > 0:
+                    out.append(f'G1 E{f3(retract)} F{fmm(cfg["travelV"])}')
+
             primed = True
 
             cx, cy = x0, y0
