@@ -765,9 +765,10 @@ def build_gcode(cfg, layers, app):
     out.append(f'G0 F{fmm(cfg["travelV"])} Z{f3(cfg["layerH"])}')
     out.append('')
 
-    # Carry the head's XY position between layers so sort_paths begins from
-    # wherever the nozzle actually is, rather than always (0, 0).
-    sort_start = (0.0, 0.0)
+    # Initial head position in path-space coordinates.
+    # Machine home (G-code X=0 Y=0) maps to path (0, H_mm): left edge,
+    # bottom of panel (gy = H_mm - H_mm + y_offset = y_offset ≈ 0).
+    sort_start = (0.0, H_mm)
 
     for layer_idx in range(num_layers):
         t      = 1.0 if num_layers <= 1 else layer_idx / (num_layers - 1)
@@ -802,8 +803,10 @@ def build_gcode(cfg, layers, app):
             do_travel   = travel_dist > 1e-6
 
             if do_travel:
+                did_retract = False
                 if primed and retract > 0:
                     out.append(f'G1 E-{f3(retract)} F{fmm(cfg["travelV"])}')
+                    did_retract = True
 
                 # Route travel so it stays on already-printed beads.
                 travel_pts = route_travel((cx, cy), (x0, y0),
@@ -815,7 +818,8 @@ def build_gcode(cfg, layers, app):
                         out.append(f'G0 F{fmm(cfg["travelV"])} X{f3(wx)} Y{f3(gwy)}')
                 out.append(f'G0 F{fmm(cfg["travelV"])} X{f3(x0)} Y{f3(gy0)}')
 
-                if retract > 0:
+                # Only de-retract if we actually retracted.
+                if did_retract:
                     out.append(f'G1 E{f3(retract)} F{fmm(cfg["travelV"])}')
 
             primed = True
