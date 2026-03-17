@@ -802,9 +802,13 @@ def build_gcode(cfg, layers, app):
             travel_dist = math.hypot(x0 - cx, y0 - cy)
             do_travel   = travel_dist > 1e-6
 
-            if do_travel:
+            if not primed:
+                # Always G0 to first print position before any extrusion,
+                # even if the distance is zero (head hasn't moved since G28).
+                out.append(f'G0 F{fmm(cfg["travelV"])} X{f3(x0)} Y{f3(gy0)}')
+            elif do_travel:
                 did_retract = False
-                if primed and retract > 0:
+                if retract > 0:
                     out.append(f'G1 E-{f3(retract)} F{fmm(cfg["travelV"])}')
                     did_retract = True
 
