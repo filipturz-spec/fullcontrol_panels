@@ -25,7 +25,7 @@ from pathlib import Path
 
 try:
     from shapely.geometry import LineString, MultiLineString
-    from shapely.ops import unary_union
+    from shapely.ops import unary_union, nearest_points as shp_nearest_pts
     HAS_SHAPELY = True
 except ImportError:
     HAS_SHAPELY = False
@@ -466,9 +466,19 @@ def build_path_graph(paths, line_w):
     """
     Build the travel graph for one layer.
     Returns (nodes, adj, zone):
-      nodes — list of (x, y) tuples, one per path vertex
+      nodes — list of (x, y) tuples, one per path vertex + transit nodes
       adj   — list of edge lists; each edge is (cost, neighbor_idx)
       zone  — Shapely union of path buffers
+
+    Graph edges:
+      on-bead   — consecutive vertices along each path; cost = arc length × 1.
+      transit   — intermediate nodes inserted at the closest approach between
+                  any two non-adjacent segments that come within line_w × 2.
+                  Each transit node is connected along its parent segment
+                  (on-bead cost) and across to the opposite transit node
+                  (cost = gap × _TRAVEL_PENALTY).
+      tiny-hop  — any two nodes within line_w × _HOP_FACTOR of each other
+                  get a direct air-hop edge; cost = distance × _TRAVEL_PENALTY.
     """
     if not HAS_SHAPELY or not paths:
         return [], [], None
@@ -481,33 +491,101 @@ def build_path_graph(paths, line_w):
     zone = unary_union(bufs)
 
     max_hop = line_w * _HOP_FACTOR
-    nodes   = []
-    adj     = []
+    nodes: list = []
+    adj:   list = []
+
+    # ── Phase 1: vertex nodes + along-path edges ──────────────────────────────
+    seg_list = []  # (node_idx_start, node_idx_end) for each segment
 
     for pts in valid:
-        start = len(nodes)
+        base = len(nodes)
         for pt in pts:
             nodes.append(tuple(pt))
             adj.append([])
-        end = len(nodes) - 1
-        # Along-path edges both directions; cost = arc length (on-bead, ×1)
-        for i in range(start, end):
+        for i in range(base, len(nodes) - 1):
             d = math.hypot(nodes[i+1][0] - nodes[i][0],
                            nodes[i+1][1] - nodes[i][1])
             if d > 0:
                 adj[i    ].append((d, i + 1))
                 adj[i + 1].append((d, i))
+                seg_list.append((i, i + 1))
 
-    # Spatial grid for efficient tiny-hop discovery
+    # ── Phase 2: transit nodes at segment-to-segment closest approaches ────────
+    # When two non-adjacent segments come within line_w × 2 of each other,
+    # inject a node at the closest point on each and connect them.
+    transit_thresh = line_w * 2.0
+    snap_eps       = line_w * 0.05  # don't add a node if it's basically an endpoint
+
+    for si in range(len(seg_list)):
+        na, nb = seg_list[si]
+        pa1, pa2 = nodes[na], nodes[nb]
+        ls_a = LineString([pa1, pa2])
+        xa1, ya1 = pa1;  xa2, ya2 = pa2
+        bb_ax1 = min(xa1, xa2) - transit_thresh
+        bb_ax2 = max(xa1, xa2) + transit_thresh
+        bb_ay1 = min(ya1, ya2) - transit_thresh
+        bb_ay2 = max(ya1, ya2) + transit_thresh
+
+        for sj in range(si + 1, len(seg_list)):
+            nc, nd = seg_list[sj]
+            # Skip segments that share an endpoint with si
+            if na in (nc, nd) or nb in (nc, nd):
+                continue
+            pb1, pb2 = nodes[nc], nodes[nd]
+            xb1, yb1 = pb1;  xb2, yb2 = pb2
+            # Bounding-box pre-filter
+            if (max(xb1, xb2) < bb_ax1 or min(xb1, xb2) > bb_ax2 or
+                    max(yb1, yb2) < bb_ay1 or min(yb1, yb2) > bb_ay2):
+                continue
+            ls_b = LineString([pb1, pb2])
+            if ls_a.distance(ls_b) > transit_thresh:
+                continue
+
+            # Find exact closest points on each segment
+            pt_a_shp, pt_b_shp = shp_nearest_pts(ls_a, ls_b)
+            pta = (pt_a_shp.x, pt_a_shp.y)
+            ptb = (pt_b_shp.x, pt_b_shp.y)
+
+            # Transit node on segment si — skip if within snap_eps of an endpoint
+            da1 = math.hypot(pta[0] - pa1[0], pta[1] - pa1[1])
+            da2 = math.hypot(pta[0] - pa2[0], pta[1] - pa2[1])
+            if da1 <= snap_eps:
+                ta = na
+            elif da2 <= snap_eps:
+                ta = nb
+            else:
+                ta = len(nodes)
+                nodes.append(pta);  adj.append([])
+                adj[ta].append((da1, na));  adj[na].append((da1, ta))
+                adj[ta].append((da2, nb));  adj[nb].append((da2, ta))
+
+            # Transit node on segment sj
+            db1 = math.hypot(ptb[0] - pb1[0], ptb[1] - pb1[1])
+            db2 = math.hypot(ptb[0] - pb2[0], ptb[1] - pb2[1])
+            if db1 <= snap_eps:
+                tb = nc
+            elif db2 <= snap_eps:
+                tb = nd
+            else:
+                tb = len(nodes)
+                nodes.append(ptb);  adj.append([])
+                adj[tb].append((db1, nc));  adj[nc].append((db1, tb))
+                adj[tb].append((db2, nd));  adj[nd].append((db2, tb))
+
+            # Air-hop edge between the two transit nodes
+            hop_d = math.hypot(pta[0] - ptb[0], pta[1] - ptb[1])
+            if hop_d > 0:
+                c = hop_d * _TRAVEL_PENALTY
+                adj[ta].append((c, tb))
+                adj[tb].append((c, ta))
+
+    # ── Phase 3: tiny-hop edges between all nearby nodes ──────────────────────
+    # Includes transit nodes added above.
     cell = max(max_hop, 1.0)
     grid: dict = {}
     for i, (x, y) in enumerate(nodes):
-        key = (int(x / cell), int(y / cell))
-        grid.setdefault(key, []).append(i)
+        grid.setdefault((int(x / cell), int(y / cell)), []).append(i)
 
-    # Tiny-hop edges: all nodes within max_hop of each other.
-    # No zone-crossing check — short hops (≤ line_w × _HOP_FACTOR) are
-    # explicitly allowed by the user regardless of what they pass over.
     for i, (xi, yi) in enumerate(nodes):
         gx, gy = int(xi / cell), int(yi / cell)
         for dx in (-1, 0, 1):
@@ -807,8 +885,10 @@ def build_gcode(cfg, layers, app):
                 # even if the distance is zero (head hasn't moved since G28).
                 out.append(f'G0 F{fmm(cfg["travelV"])} X{f3(x0)} Y{f3(gy0)}')
             elif do_travel:
+                # Skip retraction for very short hops — no stringing risk.
+                short_hop   = travel_dist <= cfg['lineW'] * 5.0
                 did_retract = False
-                if retract > 0:
+                if not short_hop and retract > 0:
                     out.append(f'G1 E-{f3(retract)} F{fmm(cfg["travelV"])}')
                     did_retract = True
 
