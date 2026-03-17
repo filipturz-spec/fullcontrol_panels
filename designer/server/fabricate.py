@@ -798,8 +798,11 @@ def build_gcode(cfg, layers, app):
     W_mm       = app['panelW'] * CM
     H_mm       = app['panelH'] * CM
     num_layers = max(1, round(cfg['depth'] / cfg['layerH']))
-    e_rate     = cfg['feedRate']
-    retract    = cfg['retract']
+    e_rate      = cfg['feedRate']
+    retract     = cfg['retract']
+    retract_v   = cfg.get('retractV',  45.0)   # retract/de-retract speed mm/s
+    extra_prime = cfg.get('extraPrime', 0.0)    # extra filament after de-retract
+    no_retract_d = cfg.get('noRetractD', cfg['lineW'] * 4.0)  # min travel to retract
 
     def f3(v):        return f'{v:.3f}'
     def fmm(v):       return str(round(v * 60))   # mm/s → mm/min
@@ -812,7 +815,7 @@ def build_gcode(cfg, layers, app):
         f'; Line {cfg["lineW"]} mm   Feed rate {e_rate} E/mm',
         f'; Nozzle {cfg["nozzleT"]} °C   Bed {cfg["bedT"]} °C',
         f'; Print {cfg["printV"]} mm/s   Travel {cfg["travelV"]} mm/s',
-        f'; Retract {retract} mm',
+        f'; Retract {retract} mm @ {retract_v} mm/s   Extra prime {extra_prime} mm   No-retract below {no_retract_d} mm',
         f'; Overlap trimming: {"ON (shapely)" if HAS_SHAPELY else "OFF — pip install shapely"}',
         '; ================================================',
         '',
@@ -885,11 +888,10 @@ def build_gcode(cfg, layers, app):
                 # even if the distance is zero (head hasn't moved since G28).
                 out.append(f'G0 F{fmm(cfg["travelV"])} X{f3(x0)} Y{f3(gy0)}')
             elif do_travel:
-                # Skip retraction for very short hops — no stringing risk.
-                short_hop   = travel_dist <= cfg['lineW'] * 5.0
+                # Skip retraction for hops shorter than no_retract_d.
                 did_retract = False
-                if not short_hop and retract > 0:
-                    out.append(f'G1 E-{f3(retract)} F{fmm(cfg["travelV"])}')
+                if travel_dist > no_retract_d and retract > 0:
+                    out.append(f'G1 E-{f3(retract)} F{fmm(retract_v)}')
                     did_retract = True
 
                 # Route travel so it stays on already-printed beads.
@@ -902,9 +904,11 @@ def build_gcode(cfg, layers, app):
                         out.append(f'G0 F{fmm(cfg["travelV"])} X{f3(wx)} Y{f3(gwy)}')
                 out.append(f'G0 F{fmm(cfg["travelV"])} X{f3(x0)} Y{f3(gy0)}')
 
-                # Only de-retract if we actually retracted.
+                # De-retract and optional extra prime.
                 if did_retract:
-                    out.append(f'G1 E{f3(retract)} F{fmm(cfg["travelV"])}')
+                    out.append(f'G1 E{f3(retract)} F{fmm(retract_v)}')
+                    if extra_prime > 0:
+                        out.append(f'G1 E{f3(extra_prime)} F{fmm(cfg["printV"])}')
 
             primed = True
 

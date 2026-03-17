@@ -187,6 +187,9 @@ canvas{display:block;background:#2a2926}
           <div class="fab-row"><label>Line width (mm)</label><input id="fab-lw" type="number" value="5" min="0.1" max="10" step="0.1"></div>
           <div class="fab-row"><label>Feed rate (E/mm)</label><input id="fab-em" type="number" value="1.0" min="0.001" max="100" step="0.001"></div>
           <div class="fab-row"><label>Retract (mm)</label><input id="fab-ret" type="number" value="0.8" min="0" max="10" step="0.1"></div>
+          <div class="fab-row"><label>Retract speed (mm/s)</label><input id="fab-retv" type="number" value="45" min="1" max="200" step="1"></div>
+          <div class="fab-row"><label>Extra prime after retract (mm)</label><input id="fab-prime" type="number" value="0" min="0" max="5" step="0.05"></div>
+          <div class="fab-row"><label>Min travel to retract (mm)</label><input id="fab-nrd" type="number" value="20" min="0" max="200" step="1"></div>
           <div class="fab-row"><label>Print speed (mm/s)</label><input id="fab-ps" type="number" value="40" min="1" max="500" step="1"></div>
           <div class="fab-row"><label>Travel speed (mm/s)</label><input id="fab-ts" type="number" value="120" min="1" max="500" step="1"></div>
           <div class="fab-row"><label>Nozzle temp (°C)</label><input id="fab-nt" type="number" value="220" min="0" max="400" step="1"></div>
@@ -1193,9 +1196,12 @@ function getFabCfg() {
     layerH:   gn('fab-lh'),
     lineW:    gn('fab-lw'),
     feedRate: gn('fab-em') || 1.0,
-    retract:  gn('fab-ret'),
-    printV:   gn('fab-ps'),
-    travelV:  gn('fab-ts'),
+    retract:     gn('fab-ret'),
+    retractV:    gn('fab-retv') || 45,
+    extraPrime:  gn('fab-prime'),
+    noRetractD:  gn('fab-nrd'),
+    printV:      gn('fab-ps'),
+    travelV:     gn('fab-ts'),
     nozzleT:  gn('fab-nt'),
     bedT:     gn('fab-bt'),
     startG:   gv('fab-start'),
